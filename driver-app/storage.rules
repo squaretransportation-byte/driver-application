@@ -1,0 +1,17 @@
+rules_version = '2';
+
+// Square Transportation — Driver Application Files
+// Deploy with: firebase deploy --only storage
+service firebase.storage {
+  match /b/{bucket}/o {
+    // All uploads come through the Admin SDK with signed URLs.
+    // No direct client read or write access.
+    match /applications/{applicationId}/{allPaths=**} {
+      allow read: if false;
+      allow write: if false;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

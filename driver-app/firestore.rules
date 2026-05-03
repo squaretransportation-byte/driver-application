@@ -1,0 +1,26 @@
+rules_version = '2';
+
+// Square Transportation — Driver Applications
+// Deploy with: firebase deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Driver applications — write-only from the API (using Admin SDK, bypasses rules)
+    // Read access only via Admin SDK or via a future authenticated dashboard.
+    match /driverApplications/{applicationId} {
+      allow read: if false;   // No client reads — admin SDK only
+      allow write: if false;  // No client writes — admin SDK only
+    }
+
+    // Aggregate metadata
+    match /metadata/{docId} {
+      allow read: if false;
+      allow write: if false;
+    }
+
+    // Default deny everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

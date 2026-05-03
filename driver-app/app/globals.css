@@ -1,0 +1,13 @@
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body { background: #0A0F1A; margin: 0; }
+body { font-family: 'Manrope', sans-serif; color: #F5EFE6; }
+::selection { background: #B8924A; color: #0F1B2D; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0A0F1A; }
+::-webkit-scrollbar-thumb { background: #6B1A1A; border-radius: 4px; }
+input::placeholder, textarea::placeholder { color: #5A6878 !important; }
