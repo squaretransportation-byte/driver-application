@@ -172,7 +172,7 @@ function useSpeech(onResult: (r: { final: string; interim: string; full: string 
   return { listening, supported, start, stop };
 }
 
-// Calls our serverless API route â€” API key never leaves the server
+// Calls our serverless API route — API key never leaves the server
 async function askClaude(messages: any[], system = "", model = "claude-haiku-4-5-20251001") {
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -357,7 +357,7 @@ function UploadZone({ id, label, hint, file, onFile, required, accept }: any) {
       }
       // Soft warning for very small images (likely blurry / accidental)
       if (f.type.startsWith("image/") && payload.size < 30_000) {
-        setError("Image looks very small â€” make sure it's clear and readable.");
+        setError("Image looks very small — make sure it's clear and readable.");
       }
       // Hard cap at ~4 MB after compression
       if (payload.size > 4 * 1024 * 1024) {
@@ -429,7 +429,7 @@ function UploadZone({ id, label, hint, file, onFile, required, accept }: any) {
             </div>
           ) : null}
           <div className="text-[10px] mt-1 text-right" style={{ color: BRAND.gold }}>
-            {(file.size / 1024).toFixed(0)} KB Â· {file.name}
+            {(file.size / 1024).toFixed(0)} KB · {file.name}
           </div>
         </div>
       )}
@@ -441,13 +441,13 @@ function UploadZone({ id, label, hint, file, onFile, required, accept }: any) {
             onClick={() => cameraInputRef.current?.click()}
             className="flex items-center justify-center gap-1.5 py-2.5 rounded text-[11px] uppercase tracking-widest font-bold disabled:opacity-50"
             style={{ background: BRAND.maroon, color: BRAND.cream }}>
-            ðŸ“· Take Photo
+            📷 Take Photo
           </button>
           <button type="button" disabled={busy}
             onClick={() => fileInputRef.current?.click()}
             className="flex items-center justify-center gap-1.5 py-2.5 rounded text-[11px] uppercase tracking-widest font-bold disabled:opacity-50"
             style={{ background: "transparent", color: BRAND.gold, border: `1px solid ${BRAND.gold}50` }}>
-            ðŸ“ Upload File
+            📁 Upload File
           </button>
         </div>
       )}
@@ -456,12 +456,12 @@ function UploadZone({ id, label, hint, file, onFile, required, accept }: any) {
           <button type="button" onClick={() => cameraInputRef.current?.click()}
             className="flex-1 py-2 rounded text-[10px] uppercase tracking-widest font-bold"
             style={{ background: "transparent", color: BRAND.gold, border: `1px solid ${BRAND.gold}40` }}>
-            ðŸ“· Re-take
+            📷 Re-take
           </button>
           <button type="button" onClick={() => fileInputRef.current?.click()}
             className="flex-1 py-2 rounded text-[10px] uppercase tracking-widest font-bold"
             style={{ background: "transparent", color: BRAND.gold, border: `1px solid ${BRAND.gold}40` }}>
-            ðŸ“ Replace
+            📁 Replace
           </button>
         </div>
       )}
@@ -491,7 +491,7 @@ const INTERVIEW_QUESTIONS: any[] = [
   { id: "ssn", section: "Personal", q: "What is your Social Security number? Format: XXX-XX-XXXX.", type: "text" },
   { id: "phone", section: "Personal", q: "Best phone number to reach you?", type: "tel" },
   { id: "email", section: "Personal", q: "Email address?", type: "email" },
-  { id: "position", section: "Personal", q: "What position are you applying for? Options: Company Driver Per Mile, Owner Operator, Lease Purchase, Flat Rate Driver, or Local Driver.", type: "select", options: ["Company Driver â€” Per Mile", "Owner Operator", "Lease Purchase", "Flat Rate Driver", "Local Driver"] },
+  { id: "position", section: "Personal", q: "What position are you applying for? Options: Company Driver Per Mile, Owner Operator, Lease Purchase, Flat Rate Driver, or Local Driver.", type: "select", options: ["Company Driver — Per Mile", "Owner Operator", "Lease Purchase", "Flat Rate Driver", "Local Driver"] },
   { id: "dateAvailable", section: "Personal", q: "When are you available to start work?", type: "date" },
   { id: "legalRight", section: "Personal", q: "Do you have legal right to work in the United States?", type: "yesno" },
   { id: "_res0_street", section: "Residency", q: "Now your current address. What's the street?", type: "text" },
@@ -528,7 +528,7 @@ const INTERVIEW_QUESTIONS: any[] = [
   { id: "daPreEmpPositive", section: "D&A", q: "Have you ever tested positive on a pre-employment drug or alcohol test for a job you applied to but didn't get?", type: "yesno" },
   { id: "daExplain", section: "D&A", q: "You answered yes above. Please describe and confirm Return-to-Duty status.", type: "textarea", showIf: (d: any) => [d.daRefused, d.daPositive, d.daPreEmpPositive].includes("Yes") },
   { id: "_edu_hs", section: "Education", q: "What high school did you attend?", type: "text", optional: true },
-  { id: "hosTotal", section: "Compliance", q: "How many total on-duty hours have you worked in the past 7 days? Required by Â§395.8.", type: "text" },
+  { id: "hosTotal", section: "Compliance", q: "How many total on-duty hours have you worked in the past 7 days? Required by §395.8.", type: "text" },
   { id: "hosLastRelieved", section: "Compliance", q: "When were you last relieved from duty? Date and time.", type: "text" },
   { id: "otherEmployer", section: "Other Work", q: "Are you currently working for another employer?", type: "yesno" },
   { id: "otherEmployerIntent", section: "Other Work", q: "Do you intend to work for another employer while employed by Square Transportation?", type: "yesno" }
@@ -557,7 +557,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
   // Total required fields, for progress display
   const TOTAL_FIELDS = 36;
 
-  // Apply extracted fields from AI to form data â€” supports dot notation for nested
+  // Apply extracted fields from AI to form data — supports dot notation for nested
   const applyExtractedFields = useCallback((fields: Record<string, any>) => {
     if (!fields || Object.keys(fields).length === 0) return;
     setData((prev: any) => {
@@ -712,7 +712,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
       }
     };
     r.onend = () => {
-      // Recognition stopped â€” handled by submit logic
+      // Recognition stopped — handled by submit logic
     };
     recognitionRef.current = r;
     return () => {
@@ -742,7 +742,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
     try { recognitionRef.current?.stop(); } catch (_) { /* noop */ }
     const text = (finalTranscriptRef.current + interimRef.current).trim();
     if (!text) {
-      // Nothing captured â€” restart listening
+      // Nothing captured — restart listening
       submitLockRef.current = false;
       setTimeout(() => startListening(), 400);
       return;
@@ -815,7 +815,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
           </div>
           <div>
             <div className="text-xs uppercase tracking-[0.25em]" style={{ color: BRAND.gold }}>Voice Interview</div>
-            <div className="text-xs" style={{ color: "#8896A8" }}>Graviton Â· AI Recruiting Assistant</div>
+            <div className="text-xs" style={{ color: "#8896A8" }}>Graviton · AI Recruiting Assistant</div>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -955,7 +955,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
               }}>
                 {transcript || (
                   <span style={{ color: "#5A6878", fontStyle: "italic" }}>
-                    Speak your answer â€” I'll wait until you're done...
+                    Speak your answer — I'll wait until you're done...
                   </span>
                 )}
               </div>
@@ -988,7 +988,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
             disabled={!aiMessage || phase === "speaking" || phase === "processing"}
             className="px-3 py-2.5 rounded text-xs uppercase tracking-widest font-bold disabled:opacity-30"
             style={{ color: BRAND.gold, border: `1px solid ${BRAND.gold}40`, background: "transparent" }}>
-            ðŸ”Š Repeat
+            🔊 Repeat
           </button>
           <button
             onClick={skipQuestion}
@@ -1008,7 +1008,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
           {phase === "listening"
             ? "Auto-submits after 2 seconds of silence"
             : phase === "speaking"
-              ? "Graviton is speaking â€” listening will start automatically"
+              ? "Graviton is speaking — listening will start automatically"
               : `${collectedCount}/${TOTAL_FIELDS} fields collected`}
         </div>
       </div>
@@ -1049,7 +1049,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
 
 function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepName }: any) {
   const [messages, setMessages] = useState<any[]>([
-    { role: "assistant", content: "Hi â€” I'm your onboarding assistant. Ask me anything about the application, or use the **Voice Apply** button to fill the form by talking. I can answer DOT/FMCSA questions, explain what each field means, or help you draft your employment history." }
+    { role: "assistant", content: "Hi — I'm your onboarding assistant. Ask me anything about the application, or use the **Voice Apply** button to fill the form by talking. I can answer DOT/FMCSA questions, explain what each field means, or help you draft your employment history." }
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1084,9 +1084,9 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
     setVoiceMode(false);
     const transcript = voiceTranscript;
     setVoiceTranscript("");
-    setMessages(prev => [...prev, { role: "user", content: `ðŸŽ™ï¸ Voice apply: "${transcript}"` }]);
+    setMessages(prev => [...prev, { role: "user", content: `🎙️ Voice apply: "${transcript}"` }]);
     try {
-      const system = `Extract structured data from a driver's spoken application. Output ONLY a JSON object â€” no preamble, no markdown fences.\n\nAvailable fields: firstName, middleName, lastName, dob (YYYY-MM-DD), ssn, email, phone, position, dateAvailable (YYYY-MM-DD), legalRight (Yes/No), licenseState (2-letter), licenseNumber, licenseClass (A/B/C), licenseEndorsements, licenseExpiration (YYYY-MM-DD), medCardExpiration (YYYY-MM-DD), education.hs, education.college, education.other.\n\nOnly include fields the driver clearly mentioned. Return valid JSON only.`;
+      const system = `Extract structured data from a driver's spoken application. Output ONLY a JSON object — no preamble, no markdown fences.\n\nAvailable fields: firstName, middleName, lastName, dob (YYYY-MM-DD), ssn, email, phone, position, dateAvailable (YYYY-MM-DD), legalRight (Yes/No), licenseState (2-letter), licenseNumber, licenseClass (A/B/C), licenseEndorsements, licenseExpiration (YYYY-MM-DD), medCardExpiration (YYYY-MM-DD), education.hs, education.college, education.other.\n\nOnly include fields the driver clearly mentioned. Return valid JSON only.`;
       const reply = await askClaude([{ role: "user", content: transcript }], system, "claude-sonnet-4-6");
       const cleaned = reply.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(cleaned);
@@ -1099,9 +1099,9 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
         return next;
       });
       const filled = Object.keys(parsed).filter(k => parsed[k]).join(", ");
-      setMessages(prev => [...prev, { role: "assistant", content: `âœ“ Filled: **${filled}**. Review before continuing.` }]);
+      setMessages(prev => [...prev, { role: "assistant", content: `✓ Filled: **${filled}**. Review before continuing.` }]);
     } catch (e: any) {
-      setMessages(prev => [...prev, { role: "assistant", content: "Couldn't parse â€” try again with clearer field statements." }]);
+      setMessages(prev => [...prev, { role: "assistant", content: "Couldn't parse — try again with clearer field statements." }]);
     }
     setLoading(false);
   };
@@ -1140,7 +1140,7 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
 
       {voiceMode && (
         <div className="px-4 py-3 border-t" style={{ borderColor: BRAND.gold + "30", background: BRAND.navy }}>
-          <div className="text-[10px] uppercase tracking-[0.25em] mb-2" style={{ color: BRAND.gold }}>ðŸŽ™ï¸ Voice Apply â€” Speak Freely</div>
+          <div className="text-[10px] uppercase tracking-[0.25em] mb-2" style={{ color: BRAND.gold }}>🎙️ Voice Apply — Speak Freely</div>
           <div className="min-h-[60px] p-3 rounded text-sm mb-2" style={{ background: "rgba(0,0,0,0.4)", color: BRAND.cream }}>
             {voiceTranscript || <span style={{ color: "#5A6878" }}>Start talking...</span>}
           </div>
@@ -1212,16 +1212,16 @@ function StepWelcome({ next, startInterview }: any) {
     <div className="text-center py-8 sm:py-12">
       <div className="inline-block px-4 py-1.5 rounded-full mb-6 text-[10px] uppercase tracking-[0.3em]"
         style={{ background: BRAND.maroon + "30", color: BRAND.gold, border: `1px solid ${BRAND.gold}40` }}>
-        MC-728978 Â· DOT-2089206 Â· FMCSA Compliant
+        MC-728978 · DOT-2089206 · FMCSA Compliant
       </div>
       <h1 className="text-5xl sm:text-7xl mb-4" style={{ fontFamily: "Oswald, sans-serif", fontWeight: 600, letterSpacing: "0.02em", color: BRAND.cream, lineHeight: 0.95 }}>
         DRIVER ONBOARDING
       </h1>
       <div className="text-2xl mb-2" style={{ color: BRAND.gold, fontFamily: "Oswald, sans-serif", letterSpacing: "0.4em" }}>
-        GO BIG Â· GO SQUARE
+        GO BIG · GO SQUARE
       </div>
       <p className="max-w-xl mx-auto mt-6 mb-10 text-sm sm:text-base" style={{ color: "#A8B6C8", lineHeight: 1.7 }}>
-        Welcome to Square Transportation Solution Inc. Complete your Driver Qualification File by speaking with Graviton, our AI assistant â€” or fill out the form yourself.
+        Welcome to Square Transportation Solution Inc. Complete your Driver Qualification File by speaking with Graviton, our AI assistant — or fill out the form yourself.
       </p>
 
       <div className="grid sm:grid-cols-2 gap-4 max-w-3xl mx-auto mb-8">
@@ -1241,7 +1241,7 @@ function StepWelcome({ next, startInterview }: any) {
             VOICE INTERVIEW
           </div>
           <div className="text-xs mb-3" style={{ color: BRAND.cream + "cc" }}>
-            Talk to Graviton, our AI assistant, like a real phone interview. It asks, you speak. ~10â€“15 min.
+            Talk to Graviton, our AI assistant, like a real phone interview. It asks, you speak. ~10–15 min.
           </div>
           <div className="flex items-center gap-1.5 text-xs uppercase tracking-widest font-bold" style={{ color: BRAND.gold }}>
             Start Voice Interview <ChevronRight size={14} />
@@ -1261,7 +1261,7 @@ function StepWelcome({ next, startInterview }: any) {
             FILL FORM MANUALLY
           </div>
           <div className="text-xs mb-3" style={{ color: "#A8B6C8" }}>
-            9-step wizard. Type or speak each field. ~30â€“40 minutes.
+            9-step wizard. Type or speak each field. ~30–40 minutes.
           </div>
           <div className="flex items-center gap-1.5 text-xs uppercase tracking-widest font-bold" style={{ color: BRAND.gold }}>
             Begin Form <ChevronRight size={14} />
@@ -1282,7 +1282,7 @@ function StepWelcome({ next, startInterview }: any) {
           </div>
         ))}
       </div>
-      <div className="mt-4 text-xs" style={{ color: "#5A6878" }}>Progress saved automatically Â· You can switch modes anytime</div>
+      <div className="mt-4 text-xs" style={{ color: "#5A6878" }}>Progress saved automatically · You can switch modes anytime</div>
     </div>
   );
 }
@@ -1291,7 +1291,7 @@ function StepWelcome({ next, startInterview }: any) {
 
 function StepPersonal({ data, set }: any) {
   return (
-    <Section title="Personal Information" subtitle="49 CFR Â§391.21(b)(2)" icon={User}>
+    <Section title="Personal Information" subtitle="49 CFR §391.21(b)(2)" icon={User}>
       <div className="grid sm:grid-cols-3 gap-4 mb-5">
         <Field label="First Name" required><VoiceInput value={data.firstName} onChange={(v: string) => set("firstName", v)} /></Field>
         <Field label="Middle Name"><VoiceInput value={data.middleName} onChange={(v: string) => set("middleName", v)} /></Field>
@@ -1308,7 +1308,7 @@ function StepPersonal({ data, set }: any) {
       <div className="grid sm:grid-cols-3 gap-4 mb-5">
         <Field label="Position" required>
           <Select value={data.position} onChange={(v: string) => set("position", v)}
-            options={["Company Driver â€” Per Mile", "Owner Operator", "Lease Purchase", "Flat Rate Driver", "Local Driver"]} />
+            options={["Company Driver — Per Mile", "Owner Operator", "Lease Purchase", "Flat Rate Driver", "Local Driver"]} />
         </Field>
         <Field label="Date Available" required><VoiceInput type="date" value={data.dateAvailable} onChange={(v: string) => set("dateAvailable", v)} /></Field>
         <Field label="Legal Right to Work" required><YesNo value={data.legalRight} onChange={(v: string) => set("legalRight", v)} /></Field>
@@ -1319,7 +1319,7 @@ function StepPersonal({ data, set }: any) {
 
 function StepLicense({ data, set }: any) {
   return (
-    <Section title="License & Experience" subtitle="49 CFR Â§391.21(b)(7)" icon={FileText}>
+    <Section title="License & Experience" subtitle="49 CFR §391.21(b)(7)" icon={FileText}>
       <div className="grid sm:grid-cols-5 gap-3 mb-5">
         <Field label="State"><Select value={data.licenseState} onChange={(v: string) => set("licenseState", v)} options={STATES} /></Field>
         <Field label="License #" required><VoiceInput value={data.licenseNumber} onChange={(v: string) => set("licenseNumber", v)} /></Field>
@@ -1336,7 +1336,7 @@ function StepLicense({ data, set }: any) {
 
 function StepRecord({ data, set }: any) {
   return (
-    <Section title="Record" subtitle="Past 3 years Â· Â§391.21(b)(8)â€“(9)" icon={AlertCircle}>
+    <Section title="Record" subtitle="Past 3 years · §391.21(b)(8)–(9)" icon={AlertCircle}>
       <div className="space-y-3 mb-5">
         {[
           ["everDeniedLicense", "Have you ever been denied a license, permit, or privilege to operate a motor vehicle?"],
@@ -1356,7 +1356,7 @@ function StepRecord({ data, set }: any) {
 
 function StepEmployment({ data, set }: any) {
   return (
-    <Section title="Employment History" subtitle="10 years required Â· Â§391.21(b)(10â€“11)" icon={Briefcase}>
+    <Section title="Employment History" subtitle="10 years required · §391.21(b)(10–11)" icon={Briefcase}>
       {data.employers.map((emp: any, i: number) => (
         <div key={i} className="mb-5 p-4 rounded-lg" style={{ background: "rgba(0,0,0,0.25)", border: `1px solid ${BRAND.gold}20` }}>
           <div className="text-xs uppercase tracking-[0.25em] font-bold mb-3" style={{ color: BRAND.gold }}>{i === 0 ? "Current / Most Recent" : `Previous ${i}`}</div>
@@ -1418,18 +1418,18 @@ function StepDocs({ data, set, files, setFiles }: any) {
           </div>
         </div>
         <div className="text-[11px]" style={{ color: "#8896A8", lineHeight: 1.5 }}>
-          ðŸ“· Tap "Take Photo" to use your phone camera. Lay each document flat on a dark surface, fill the frame, and avoid glare. Photos auto-compress before upload.
+          📷 Tap "Take Photo" to use your phone camera. Lay each document flat on a dark surface, fill the frame, and avoid glare. Photos auto-compress before upload.
         </div>
       </div>
 
       <div className="grid sm:grid-cols-2 gap-3 mb-6">
-        <UploadZone label="CDL â€” Front" required hint="Front side of your Commercial Driver's License"
+        <UploadZone label="CDL — Front" required hint="Front side of your Commercial Driver's License"
           file={files.cdlFront} onFile={updateFile("cdlFront")} />
-        <UploadZone label="CDL â€” Back" required hint="Back side of your CDL (with restrictions/endorsements)"
+        <UploadZone label="CDL — Back" required hint="Back side of your CDL (with restrictions/endorsements)"
           file={files.cdlBack} onFile={updateFile("cdlBack")} />
         <UploadZone label="Medical Card" required hint="DOT Medical Examiner's Certificate"
           file={files.medCard} onFile={updateFile("medCard")} />
-        <UploadZone label="Social Security Card" required hint="For I-9 verification â€” replaces voice SSN entry"
+        <UploadZone label="Social Security Card" required hint="For I-9 verification — replaces voice SSN entry"
           file={files.ssn} onFile={updateFile("ssn")} />
       </div>
 
@@ -1462,13 +1462,13 @@ function StepDocs({ data, set, files, setFiles }: any) {
 
 function StepAuth({ data, set, signature, setSignature }: any) {
   const auths: any[] = [
-    ["authMVR", "MVR Release â€” I authorize Square Transportation to obtain my Motor Vehicle Records."],
-    ["authPSP", "PSP Release â€” I authorize FMCSA Pre-Employment Screening Program access."],
-    ["authClearinghouse", "Clearinghouse Consent â€” I consent to FMCSA Drug & Alcohol Clearinghouse queries."],
-    ["authDA", "Drug & Alcohol Testing â€” I agree to all required testing per Part 382."],
+    ["authMVR", "MVR Release — I authorize Square Transportation to obtain my Motor Vehicle Records."],
+    ["authPSP", "PSP Release — I authorize FMCSA Pre-Employment Screening Program access."],
+    ["authClearinghouse", "Clearinghouse Consent — I consent to FMCSA Drug & Alcohol Clearinghouse queries."],
+    ["authDA", "Drug & Alcohol Testing — I agree to all required testing per Part 382."],
     ["authFCRA", "Fair Credit Reporting Act Disclosure."],
     ["authHandbook", "Employee Handbook Acknowledgment."],
-    ["authDLCert", "I certify I do not possess more than one driver's license per Â§383.21."],
+    ["authDLCert", "I certify I do not possess more than one driver's license per §383.21."],
     ["authOtherWork", "I will inform Square Transportation of any additional employment."]
   ];
   return (
@@ -1545,7 +1545,7 @@ function StepDone({ data, downloadJson, submitResult }: any) {
 
       {submitResult?.sms?.sent && (
         <div className="mt-6 text-xs" style={{ color: "#7BC97B" }}>
-          âœ“ Recruiting team notified
+          ✓ Recruiting team notified
         </div>
       )}
     </div>
@@ -1631,7 +1631,7 @@ export default function App() {
       const compressedFiles = await compressAllFiles(files);
       const totalMB = calcTotalSizeMB(compressedFiles, signature);
       if (totalMB > 4) {
-        setSubmitError(`Total upload size is ${totalMB.toFixed(1)}MB â€” exceeds 4MB limit. Try smaller photos.`);
+        setSubmitError(`Total upload size is ${totalMB.toFixed(1)}MB — exceeds 4MB limit. Try smaller photos.`);
         setSubmitting(false);
         return;
       }
@@ -1697,7 +1697,7 @@ export default function App() {
                 SQUARE TRANSPORTATION
               </div>
               <div className="text-[10px] uppercase tracking-[0.3em]" style={{ color: BRAND.gold }}>
-                Driver Onboarding Â· MC-728978
+                Driver Onboarding · MC-728978
               </div>
             </div>
           </div>
@@ -1748,7 +1748,7 @@ export default function App() {
       {restored && (
         <div className="fixed top-20 right-4 z-40 px-4 py-2 rounded shadow-lg text-xs uppercase tracking-widest font-bold"
           style={{ background: BRAND.gold, color: BRAND.navy }}>
-          âœ“ Progress restored
+          ✓ Progress restored
         </div>
       )}
 
@@ -1802,13 +1802,13 @@ export default function App() {
       <footer className="relative z-10 mt-12 py-6 border-t" style={{ borderColor: BRAND.gold + "15" }}>
         <div className="max-w-6xl mx-auto px-4 sm:px-8 flex flex-wrap items-center justify-between gap-4 text-xs" style={{ color: "#5A6878" }}>
           <div className="flex items-center gap-4 flex-wrap">
-            <span style={{ color: BRAND.gold, fontFamily: "Oswald, sans-serif", letterSpacing: "0.2em" }}>GO BIG Â· GO SQUARE</span>
-            <span>Â·</span>
+            <span style={{ color: BRAND.gold, fontFamily: "Oswald, sans-serif", letterSpacing: "0.2em" }}>GO BIG · GO SQUARE</span>
+            <span>·</span>
             <span className="flex items-center gap-1.5"><Phone size={11} /> (773) 747-8436</span>
             <span className="flex items-center gap-1.5"><Mail size={11} /> dispatch@gosquare.net</span>
             <span className="flex items-center gap-1.5"><MapPin size={11} /> Naperville, IL</span>
           </div>
-          <div>FMCSA Compliant Â· 49 CFR Parts 382, 383, 391</div>
+          <div>FMCSA Compliant · 49 CFR Parts 382, 383, 391</div>
         </div>
       </footer>
 
