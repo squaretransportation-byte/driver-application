@@ -5,7 +5,7 @@ import {
   Mic, MicOff, MessageCircle, X, Upload, Check, ChevronRight, ChevronLeft,
   FileText, Truck, Shield, User, Briefcase, Pill, FilePlus, PenTool,
   ClipboardCheck, Send, Sparkles, Loader2, AlertCircle, Plus, Trash2,
-  Download, Phone, Mail, MapPin, Settings
+  Download, Phone, Mail, MapPin, Settings, Camera, Volume2, FolderOpen
 } from "lucide-react";
 import { compressAllFiles, calcTotalSizeMB } from "@/lib/image-compress";
 
@@ -74,9 +74,15 @@ function useTextToSpeech() {
 
     const pickVoice = () => {
       const voices = window.speechSynthesis.getVoices();
-      // Prefer high-quality natural-sounding voices
+      // Prefer professional male voices for a polite business tone
       const preferred =
-        voices.find(v => /Samantha|Aaron|Karen|Daniel|Microsoft Aria|Google US English/i.test(v.name) && v.lang.startsWith("en")) ||
+        // Top picks: clear professional male voices across Win/Mac/Linux
+        voices.find(v => /Microsoft Guy|Microsoft David|Microsoft Mark|Microsoft Eric|Microsoft Andrew/i.test(v.name) && v.lang.startsWith("en")) ||
+        voices.find(v => /Daniel|Alex|Fred|Tom|Aaron/i.test(v.name) && v.lang.startsWith("en")) ||
+        voices.find(v => /Google UK English Male|Google US English Male/i.test(v.name)) ||
+        // Any male-sounding fallback
+        voices.find(v => v.lang.startsWith("en") && /male/i.test(v.name)) ||
+        // Last resort: any en-US local voice
         voices.find(v => v.lang === "en-US" && v.localService) ||
         voices.find(v => v.lang === "en-US") ||
         voices[0];
@@ -84,7 +90,21 @@ function useTextToSpeech() {
     };
     pickVoice();
     window.speechSynthesis.onvoiceschanged = pickVoice;
+
+    // CHROME BUG WORKAROUND: speechSynthesis pauses itself after ~15s idle
+    // and after SpeechRecognition runs. Without this, only the FIRST utterance
+    // plays — subsequent speak() calls do nothing until resume() is called.
+    // This interval keeps the synth awake so all questions are spoken.
+    const keepAlive = setInterval(() => {
+      try {
+        if (window.speechSynthesis && !window.speechSynthesis.speaking) {
+          window.speechSynthesis.resume();
+        }
+      } catch (_) { /* noop */ }
+    }, 4000);
+
     return () => {
+      clearInterval(keepAlive);
       window.speechSynthesis.cancel();
     };
   }, []);
@@ -95,16 +115,32 @@ function useTextToSpeech() {
       return;
     }
     try {
+      // Cancel any pending utterance, then explicitly resume()
+      // (Chrome silently pauses synth after recognition; resume() un-pauses it)
       window.speechSynthesis.cancel();
+      window.speechSynthesis.resume();
+
       const utt = new SpeechSynthesisUtterance(text);
       if (voiceRef.current) utt.voice = voiceRef.current;
-      utt.rate = 1.0;
-      utt.pitch = 1.0;
+      // Polite, measured business cadence: slightly slower, slightly lower pitch
+      utt.rate = 0.95;
+      utt.pitch = 0.95;
       utt.volume = 1.0;
       utt.onstart = () => setSpeaking(true);
       utt.onend = () => { setSpeaking(false); onEnd?.(); };
       utt.onerror = () => { setSpeaking(false); onEnd?.(); };
-      window.speechSynthesis.speak(utt);
+
+      // Small delay after cancel() lets Chrome clear its synth state cleanly
+      // before the next speak — without this, queued utterances can be dropped
+      setTimeout(() => {
+        try {
+          window.speechSynthesis.resume();
+          window.speechSynthesis.speak(utt);
+        } catch (e) {
+          setSpeaking(false);
+          onEnd?.();
+        }
+      }, 80);
     } catch (e) {
       setSpeaking(false);
       onEnd?.();
@@ -441,27 +477,27 @@ function UploadZone({ id, label, hint, file, onFile, required, accept }: any) {
             onClick={() => cameraInputRef.current?.click()}
             className="flex items-center justify-center gap-1.5 py-2.5 rounded text-[11px] uppercase tracking-widest font-bold disabled:opacity-50"
             style={{ background: BRAND.maroon, color: BRAND.cream }}>
-            📷 Take Photo
+            <Camera size={14} /> Take Photo
           </button>
           <button type="button" disabled={busy}
             onClick={() => fileInputRef.current?.click()}
             className="flex items-center justify-center gap-1.5 py-2.5 rounded text-[11px] uppercase tracking-widest font-bold disabled:opacity-50"
             style={{ background: "transparent", color: BRAND.gold, border: `1px solid ${BRAND.gold}50` }}>
-            📁 Upload File
+            <FolderOpen size={14} /> Upload File
           </button>
         </div>
       )}
       {file && (
         <div className="flex gap-2">
           <button type="button" onClick={() => cameraInputRef.current?.click()}
-            className="flex-1 py-2 rounded text-[10px] uppercase tracking-widest font-bold"
+            className="flex-1 py-2 rounded text-[10px] uppercase tracking-widest font-bold flex items-center justify-center gap-1.5"
             style={{ background: "transparent", color: BRAND.gold, border: `1px solid ${BRAND.gold}40` }}>
-            📷 Re-take
+            <Camera size={12} /> Re-take
           </button>
           <button type="button" onClick={() => fileInputRef.current?.click()}
-            className="flex-1 py-2 rounded text-[10px] uppercase tracking-widest font-bold"
+            className="flex-1 py-2 rounded text-[10px] uppercase tracking-widest font-bold flex items-center justify-center gap-1.5"
             style={{ background: "transparent", color: BRAND.gold, border: `1px solid ${BRAND.gold}40` }}>
-            📁 Replace
+            <FolderOpen size={12} /> Replace
           </button>
         </div>
       )}
@@ -986,9 +1022,9 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
           <button
             onClick={repeatQuestion}
             disabled={!aiMessage || phase === "speaking" || phase === "processing"}
-            className="px-3 py-2.5 rounded text-xs uppercase tracking-widest font-bold disabled:opacity-30"
+            className="px-3 py-2.5 rounded text-xs uppercase tracking-widest font-bold disabled:opacity-30 flex items-center gap-1.5"
             style={{ color: BRAND.gold, border: `1px solid ${BRAND.gold}40`, background: "transparent" }}>
-            🔊 Repeat
+            <Volume2 size={13} /> Repeat
           </button>
           <button
             onClick={skipQuestion}
@@ -1084,7 +1120,7 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
     setVoiceMode(false);
     const transcript = voiceTranscript;
     setVoiceTranscript("");
-    setMessages(prev => [...prev, { role: "user", content: `🎙️ Voice apply: "${transcript}"` }]);
+    setMessages(prev => [...prev, { role: "user", content: `Voice apply: "${transcript}"` }]);
     try {
       const system = `Extract structured data from a driver's spoken application. Output ONLY a JSON object — no preamble, no markdown fences.\n\nAvailable fields: firstName, middleName, lastName, dob (YYYY-MM-DD), ssn, email, phone, position, dateAvailable (YYYY-MM-DD), legalRight (Yes/No), licenseState (2-letter), licenseNumber, licenseClass (A/B/C), licenseEndorsements, licenseExpiration (YYYY-MM-DD), medCardExpiration (YYYY-MM-DD), education.hs, education.college, education.other.\n\nOnly include fields the driver clearly mentioned. Return valid JSON only.`;
       const reply = await askClaude([{ role: "user", content: transcript }], system, "claude-sonnet-4-6");
@@ -1140,7 +1176,7 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
 
       {voiceMode && (
         <div className="px-4 py-3 border-t" style={{ borderColor: BRAND.gold + "30", background: BRAND.navy }}>
-          <div className="text-[10px] uppercase tracking-[0.25em] mb-2" style={{ color: BRAND.gold }}>🎙️ Voice Apply — Speak Freely</div>
+          <div className="text-[10px] uppercase tracking-[0.25em] mb-2 flex items-center gap-1.5" style={{ color: BRAND.gold }}><Mic size={11} /> Voice Apply — Speak Freely</div>
           <div className="min-h-[60px] p-3 rounded text-sm mb-2" style={{ background: "rgba(0,0,0,0.4)", color: BRAND.cream }}>
             {voiceTranscript || <span style={{ color: "#5A6878" }}>Start talking...</span>}
           </div>
@@ -1418,7 +1454,7 @@ function StepDocs({ data, set, files, setFiles }: any) {
           </div>
         </div>
         <div className="text-[11px]" style={{ color: "#8896A8", lineHeight: 1.5 }}>
-          📷 Tap "Take Photo" to use your phone camera. Lay each document flat on a dark surface, fill the frame, and avoid glare. Photos auto-compress before upload.
+          Tap "Take Photo" to use your phone camera. Lay each document flat on a dark surface, fill the frame, and avoid glare. Photos auto-compress before upload.
         </div>
       </div>
 
