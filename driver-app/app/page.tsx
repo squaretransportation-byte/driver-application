@@ -189,42 +189,64 @@ function useTextToSpeech() {
 
     const fireSpeak = () => {
       try {
-        // ── WAKEUP HACK ──
-        // Chrome's speechSynthesis often goes mute after SpeechRecognition runs.
-        // The proven workaround: speak a near-silent dummy utterance FIRST to
-        // "wake up" the synth, then immediately queue the real utterance. The
-        // synth processes them in order, the dummy is inaudible, and the real
-        // one plays. This is the same trick Google's own demos use.
-        const dummy = new SpeechSynthesisUtterance(" ");
-        dummy.volume = 0;
-        dummy.rate = 10;
-        if (voiceRef.current) dummy.voice = voiceRef.current;
-
-        const utt = new SpeechSynthesisUtterance(text);
-        if (voiceRef.current) utt.voice = voiceRef.current;
-        utt.rate = 0.95;
-        utt.pitch = 0.95;
-        utt.volume = 1.0;
-        utt.onstart = () => {
-          dlog("onstart ✓");
-          setSpeaking(true);
-        };
-        utt.onend = () => safeEnd("onend");
-        utt.onerror = (e: any) => safeEnd(`onerror: ${e?.error || "?"}`);
-
+        // ── FULL RESET ──
+        // Chrome's speechSynthesis goes mute after SpeechRecognition runs.
+        // cancel() + resume() + small delay ensures a clean slate.
+        window.speechSynthesis.cancel();
         window.speechSynthesis.resume();
-        window.speechSynthesis.speak(dummy);   // wake up
-        window.speechSynthesis.speak(utt);     // real
-        dlog(`queued: "${text.slice(0, 40)}..." voice=${voiceRef.current?.name?.slice(0, 20) || "?"}`);
 
-        // Failsafe — if onstart never fires within 5s, recover and continue
-        setTimeout(() => {
-          if (!endCalled && !window.speechSynthesis.speaking) {
-            dlog("FAILSAFE: onstart never fired");
-            try { window.speechSynthesis.cancel(); } catch (_) {}
-            safeEnd("failsafe");
+        const go = () => {
+          try {
+            // Wake-up dummy utterance — proven Chrome workaround
+            const dummy = new SpeechSynthesisUtterance(" ");
+            dummy.volume = 0;
+            dummy.rate = 10;
+            if (voiceRef.current) dummy.voice = voiceRef.current;
+
+            const utt = new SpeechSynthesisUtterance(text);
+            if (voiceRef.current) utt.voice = voiceRef.current;
+            utt.rate = 0.95;
+            utt.pitch = 0.95;
+            utt.volume = 1.0;
+            utt.onstart = () => {
+              dlog("onstart ✓");
+              setSpeaking(true);
+            };
+            utt.onend = () => safeEnd("onend");
+            utt.onerror = (e: any) => safeEnd(`onerror: ${e?.error || "?"}`);
+
+            window.speechSynthesis.resume();
+            window.speechSynthesis.speak(dummy);   // wake up
+            window.speechSynthesis.speak(utt);     // real
+            dlog(`queued: "${text.slice(0, 40)}..." voice=${voiceRef.current?.name?.slice(0, 20) || "?"}`);
+
+            // Failsafe 1 — if onstart never fires within 4s (synth NOT speaking)
+            setTimeout(() => {
+              if (!endCalled && !window.speechSynthesis.speaking) {
+                dlog("FAILSAFE: onstart never fired");
+                try { window.speechSynthesis.cancel(); } catch (_) {}
+                safeEnd("failsafe-nostart");
+              }
+            }, 4000);
+
+            // Failsafe 2 — absolute max timeout based on text length.
+            // Catches the Chrome bug where synth claims 'speaking' but is silent.
+            const maxMs = Math.max(10000, text.length * 100);
+            setTimeout(() => {
+              if (!endCalled) {
+                dlog(`FAILSAFE: absolute timeout (${maxMs}ms)`);
+                try { window.speechSynthesis.cancel(); } catch (_) {}
+                safeEnd("failsafe-timeout");
+              }
+            }, maxMs);
+          } catch (e: any) {
+            dlog(`exception: ${e?.message || e}`);
+            safeEnd("exception");
           }
-        }, 5000);
+        };
+
+        // Small delay after cancel to let Chrome flush its internal state
+        setTimeout(go, 150);
       } catch (e: any) {
         dlog(`exception: ${e?.message || e}`);
         safeEnd("exception");
@@ -864,6 +886,8 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
     // waits for final results and can hold the audio system hostage for
     // hundreds of ms — that's been blocking the next TTS call from playing.
     try { recognitionRef.current?.abort(); } catch (_) { /* noop */ }
+    // Also cancel speechSynthesis to ensure clean state for the next TTS call
+    try { window.speechSynthesis.cancel(); } catch (_) { /* noop */ }
     const text = (finalTranscriptRef.current + interimRef.current).trim();
     if (!text) {
       // Nothing captured — restart listening
@@ -963,7 +987,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
               }}>
-              {tts.voiceName ? tts.voiceName.replace(/Microsoft |Desktop|Online/g, "").trim().slice(0, 10) : "Voice"}
+              {tts.voiceName ? tts.voiceName.replace(/^Microsoft\s+/i, "").replace(/\s*(Desktop|Online|Mobile).*$/i, "").trim() : "Voice"}
             </button>
           )}
           {tts.supported && (
