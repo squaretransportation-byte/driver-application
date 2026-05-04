@@ -5,9 +5,9 @@ import {
   Mic, MicOff, MessageCircle, X, Upload, Check, ChevronRight, ChevronLeft,
   FileText, Truck, Shield, User, Briefcase, Pill, FilePlus, PenTool,
   ClipboardCheck, Send, Sparkles, Loader2, AlertCircle, Plus, Trash2,
-  Download, Phone, Mail, MapPin, Settings, Camera, Volume2, FolderOpen
+  Download, Phone, Mail, MapPin, Camera, Volume2, FolderOpen
 } from "lucide-react";
-import { compressAllFiles, calcTotalSizeMB } from "@/lib/image-compress";
+import { compressAllFiles, calcTotalSizeMB, compressImageIfPossible } from "@/lib/image-compress";
 
 const BRAND = {
   maroon: "#6B1A1A", maroonLight: "#8B2A2A",
@@ -54,7 +54,27 @@ const DEFAULT_FORM: any = {
 };
 
 const STORAGE_KEY = "sts:onboarding:v1";
-function saveProgress(data: any) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e){} }
+const MIN_SIGNATURE_LENGTH = 200; // Base64 data URL longer than this = real drawing
+const MAX_INTERVIEW_HISTORY = 20; // Sliding window sent to API per turn
+
+function saveProgress(payload: any) {
+  try {
+    const safe = JSON.parse(JSON.stringify(payload));
+    // Never persist SSN to localStorage — PII compliance
+    if (safe.data) safe.data.ssn = "";
+    // Don't persist full file data URLs — exceeds localStorage quota
+    if (safe.files) {
+      const meta: Record<string, any> = {};
+      for (const [k, v] of Object.entries(safe.files as Record<string, any>)) {
+        if (v) meta[k] = { name: v.name, size: v.size, type: v.type, uploaded: true };
+      }
+      safe.files = meta;
+    }
+    // Don't persist signature — large base64 canvas data
+    delete safe.signature;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
+  } catch(e){}
+}
 function loadProgress() { try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : null; } catch(e) { return null; } }
 
 // Text-to-speech: makes the AI read questions aloud like a real interview.
@@ -272,8 +292,12 @@ function useTextToSpeech() {
 
 function useSpeech(onResult: (r: { final: string; interim: string; full: string }) => void) {
   const recRef = useRef<any>(null);
+  const onResultRef = useRef(onResult);
   const [listening, setListening] = useState(false);
   const [supported, setSupported] = useState(false);
+
+  // Always call the latest callback — prevents stale closure bugs
+  useEffect(() => { onResultRef.current = onResult; }, [onResult]);
 
   useEffect(() => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -291,7 +315,7 @@ function useSpeech(onResult: (r: { final: string; interim: string; full: string 
         if (e.results[i].isFinal) finalText += t + " ";
         else interim += t;
       }
-      onResult({ final: finalText, interim, full: finalText + interim });
+      onResultRef.current({ final: finalText, interim, full: finalText + interim });
     };
     r.onend = () => setListening(false);
     r.onerror = () => setListening(false);
@@ -419,11 +443,18 @@ function Checkbox({ checked, onChange, label }: any) {
 
 function SignaturePad({ onChange, value }: any) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const drawing = useRef(false);
   const last = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
-    const c = canvasRef.current; if (!c) return;
+    const c = canvasRef.current;
+    const container = containerRef.current;
+    if (!c || !container) return;
+    // Match canvas internal width to displayed width — fixes distortion on mobile
+    const displayWidth = container.getBoundingClientRect().width;
+    if (displayWidth > 0) c.width = displayWidth;
+    c.height = 140;
     const ctx = c.getContext("2d")!;
     ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.strokeStyle = BRAND.cream;
     if (value) {
@@ -455,10 +486,10 @@ function SignaturePad({ onChange, value }: any) {
   };
 
   return (
-    <div>
-      <canvas ref={canvasRef} width={500} height={140}
+    <div ref={containerRef}>
+      <canvas ref={canvasRef} height={140}
         className="w-full rounded-md border-2 cursor-crosshair touch-none"
-        style={{ background: "rgba(0,0,0,0.3)", borderColor: BRAND.gold + "60" }}
+        style={{ background: "rgba(0,0,0,0.3)", borderColor: BRAND.gold + "60", height: 140 }}
         onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
         onTouchStart={start} onTouchMove={move} onTouchEnd={end} />
       <button type="button" onClick={clear}
@@ -490,8 +521,7 @@ function UploadZone({ id, label, hint, file, onFile, required, accept }: any) {
       // Compress images on the fly so phone photos don't blow up payloads
       if (f.type.startsWith("image/") && typeof window !== "undefined") {
         try {
-          const mod = await import("../lib/image-compress");
-          payload = await mod.compressImageIfPossible(payload);
+          payload = await compressImageIfPossible(payload);
         } catch (_) { /* compression optional */ }
       }
       // Soft warning for very small images (likely blurry / accidental)
@@ -546,7 +576,7 @@ function UploadZone({ id, label, hint, file, onFile, required, accept }: any) {
           )}
         </div>
         {file && (
-          <button type="button" onClick={() => onFile(null)} className="p-1 flex-shrink-0">
+          <button type="button" onClick={() => onFile(null)} className="p-1 flex-shrink-0" aria-label="Remove uploaded file">
             <Trash2 size={14} style={{ color: BRAND.maroonLight }} />
           </button>
         )}
@@ -621,57 +651,7 @@ function UploadZone({ id, label, hint, file, onFile, required, accept }: any) {
   );
 }
 
-// ============== INTERVIEW QUESTIONS ==============
-const INTERVIEW_QUESTIONS: any[] = [
-  { id: "firstName", section: "Personal", q: "Let's start with your full name. What is your first name?", type: "text" },
-  { id: "middleName", section: "Personal", q: "Middle name? Say 'skip' if you don't have one.", type: "text", optional: true },
-  { id: "lastName", section: "Personal", q: "Last name?", type: "text" },
-  { id: "dob", section: "Personal", q: "What is your date of birth? You can say it like 'March 5, 1985'.", type: "date" },
-  { id: "ssn", section: "Personal", q: "What is your Social Security number? Format: XXX-XX-XXXX.", type: "text" },
-  { id: "phone", section: "Personal", q: "Best phone number to reach you?", type: "tel" },
-  { id: "email", section: "Personal", q: "Email address?", type: "email" },
-  { id: "position", section: "Personal", q: "What position are you applying for? Options: Company Driver Per Mile, Owner Operator, Lease Purchase, Flat Rate Driver, or Local Driver.", type: "select", options: ["Company Driver — Per Mile", "Owner Operator", "Lease Purchase", "Flat Rate Driver", "Local Driver"] },
-  { id: "dateAvailable", section: "Personal", q: "When are you available to start work?", type: "date" },
-  { id: "legalRight", section: "Personal", q: "Do you have legal right to work in the United States?", type: "yesno" },
-  { id: "_res0_street", section: "Residency", q: "Now your current address. What's the street?", type: "text" },
-  { id: "_res0_city", section: "Residency", q: "City?", type: "text" },
-  { id: "_res0_state", section: "Residency", q: "State? Two-letter abbreviation works.", type: "text" },
-  { id: "_res0_zip", section: "Residency", q: "ZIP code?", type: "text" },
-  { id: "_res0_years", section: "Residency", q: "How many years have you lived at this address?", type: "text" },
-  { id: "licenseState", section: "License", q: "What state issued your CDL?", type: "text" },
-  { id: "licenseNumber", section: "License", q: "What is your CDL license number?", type: "text" },
-  { id: "licenseClass", section: "License", q: "What class is your CDL? A, B, or C?", type: "select", options: ["A","B","C"] },
-  { id: "licenseEndorsements", section: "License", q: "Any endorsements? H, N, T, X, etc. Say 'none' if none.", type: "text", optional: true },
-  { id: "licenseExpiration", section: "License", q: "When does your CDL expire?", type: "date" },
-  { id: "medCardExpiration", section: "License", q: "When does your DOT medical card expire?", type: "date" },
-  { id: "_exp0_equipment", section: "Experience", q: "What equipment have you driven? Conestoga, Flatbed, Dry Van, Reefer, etc.", type: "text" },
-  { id: "_exp0_from", section: "Experience", q: "When did you start driving that type of equipment?", type: "date" },
-  { id: "_exp0_miles", section: "Experience", q: "Approximately how many total miles have you driven that equipment?", type: "text" },
-  { id: "everDeniedLicense", section: "Record", q: "Have you ever been denied a license, permit, or privilege to operate a motor vehicle?", type: "yesno" },
-  { id: "everSuspended", section: "Record", q: "Has any license, permit, or privilege ever been suspended or revoked?", type: "yesno" },
-  { id: "everConvictedCMV", section: "Record", q: "Have you ever been convicted of any criminal act involving a commercial motor vehicle, or while driving one?", type: "yesno" },
-  { id: "everConvictedLaw", section: "Record", q: "Have you ever been convicted of any law violation? Include guilty pleas, but exclude minor traffic violations.", type: "yesno" },
-  { id: "complianceExplain", section: "Record", q: "You answered yes above. Please explain.", type: "textarea", showIf: (d: any) => [d.everDeniedLicense, d.everSuspended, d.everConvictedCMV, d.everConvictedLaw].includes("Yes") },
-  { id: "noAccidents", section: "Record", q: "Have you had any accidents in the past 3 years? Yes or No.", type: "yesno_inverse" },
-  { id: "noConvictions", section: "Record", q: "Any traffic convictions or forfeitures in the past 3 years? Excluding parking. Yes or No.", type: "yesno_inverse" },
-  { id: "_emp0_name", section: "Employment", q: "Now let's cover employment history. What's your current or most recent employer's name?", type: "text" },
-  { id: "_emp0_position", section: "Employment", q: "What was your position there?", type: "text" },
-  { id: "_emp0_startDate", section: "Employment", q: "When did you start that job?", type: "date" },
-  { id: "_emp0_endDate", section: "Employment", q: "When did you end? Or say 'present' if still working there.", type: "date" },
-  { id: "_emp0_phone", section: "Employment", q: "Phone number for that employer?", type: "tel" },
-  { id: "_emp0_reasonLeaving", section: "Employment", q: "Reason for leaving, or explain any time gaps.", type: "textarea" },
-  { id: "_emp0_dotTested", section: "Employment", q: "Were you subject to DOT drug and alcohol testing at that job?", type: "yesno" },
-  { id: "_emp0_fmcsaSubject", section: "Employment", q: "Were you subject to FMCSA regulations there?", type: "yesno" },
-  { id: "daRefused", section: "D&A", q: "Have you ever refused to be tested for drugs or alcohol?", type: "yesno" },
-  { id: "daPositive", section: "D&A", q: "Have you ever tested positive for drugs or alcohol?", type: "yesno" },
-  { id: "daPreEmpPositive", section: "D&A", q: "Have you ever tested positive on a pre-employment drug or alcohol test for a job you applied to but didn't get?", type: "yesno" },
-  { id: "daExplain", section: "D&A", q: "You answered yes above. Please describe and confirm Return-to-Duty status.", type: "textarea", showIf: (d: any) => [d.daRefused, d.daPositive, d.daPreEmpPositive].includes("Yes") },
-  { id: "_edu_hs", section: "Education", q: "What high school did you attend?", type: "text", optional: true },
-  { id: "hosTotal", section: "Compliance", q: "How many total on-duty hours have you worked in the past 7 days? Required by §395.8.", type: "text" },
-  { id: "hosLastRelieved", section: "Compliance", q: "When were you last relieved from duty? Date and time.", type: "text" },
-  { id: "otherEmployer", section: "Other Work", q: "Are you currently working for another employer?", type: "yesno" },
-  { id: "otherEmployerIntent", section: "Other Work", q: "Do you intend to work for another employer while employed by Square Transportation?", type: "yesno" }
-];
+// Interview question sequencing is handled server-side by /api/interview/turn
 
 function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
   type Phase = "connecting" | "speaking" | "listening" | "processing" | "error" | "ended";
@@ -761,9 +741,11 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
     setError(null);
     try {
       const currentData = flattenForState(dataRef.current);
+      // Cap messages sent to API to avoid exceeding context limits
+      const trimmed = msgs.length > MAX_INTERVIEW_HISTORY ? msgs.slice(-MAX_INTERVIEW_HISTORY) : msgs;
       const apiMsgs = msgs.length === 0
         ? [{ role: "user", content: "Start the interview." }]
-        : msgs;
+        : trimmed;
 
       const res = await fetch("/api/interview/turn", {
         method: "POST",
@@ -1006,7 +988,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
             }}>
             Log
           </button>
-          <button onClick={endCall} className="p-2 rounded" style={{ color: BRAND.cream }}>
+          <button onClick={endCall} className="p-2 rounded" style={{ color: BRAND.cream }} aria-label="End interview">
             <X size={18} />
           </button>
         </div>
@@ -1183,7 +1165,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
         <div className="absolute inset-0 z-10 flex flex-col" style={{ background: BRAND.ink + "f8" }}>
           <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: BRAND.gold + "20" }}>
             <div className="text-xs uppercase tracking-[0.25em]" style={{ color: BRAND.gold }}>Conversation Log</div>
-            <button onClick={() => setShowLog(false)} className="p-2" style={{ color: BRAND.cream }}>
+            <button onClick={() => setShowLog(false)} className="p-2" style={{ color: BRAND.cream }} aria-label="Close log">
               <X size={18} />
             </button>
           </div>
@@ -1298,7 +1280,7 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
             <div className="text-xs" style={{ color: "#8896A8" }}>AI-powered onboarding help</div>
           </div>
         </div>
-        <button onClick={onClose} className="p-1.5 rounded" style={{ color: BRAND.cream }}><X size={18} /></button>
+        <button onClick={onClose} className="p-1.5 rounded" style={{ color: BRAND.cream }} aria-label="Close assistant"><X size={18} /></button>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -1775,7 +1757,7 @@ export default function App() {
 
   const allAuthsChecked = data.authMVR && data.authPSP && data.authClearinghouse &&
     data.authDA && data.authFCRA && data.authHandbook && data.authDLCert && data.authOtherWork;
-  const signatureValid = !!signature && signature.length > 200;
+  const signatureValid = !!signature && signature.length > MIN_SIGNATURE_LENGTH;
 
   const completionScore = (() => {
     let total = 0, filled = 0;
@@ -1802,7 +1784,32 @@ export default function App() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitResult, setSubmitResult] = useState<any>(null);
 
+  const validateForm = (): string[] => {
+    const errors: string[] = [];
+    const requiredFields: [string, string][] = [
+      ["firstName", "First Name"], ["lastName", "Last Name"],
+      ["dob", "Date of Birth"], ["email", "Email Address"],
+      ["phone", "Phone Number"], ["position", "Position"],
+      ["licenseNumber", "CDL Number"], ["licenseClass", "CDL Class"],
+      ["licenseExpiration", "CDL Expiration"], ["medCardExpiration", "Med Card Expiration"],
+    ];
+    requiredFields.forEach(([key, label]) => {
+      if (!data[key]?.toString().trim()) errors.push(`${label} is required`);
+    });
+    if (data.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
+      errors.push("Email format is invalid");
+    }
+    if (!signatureValid) errors.push("E-Signature is required");
+    if (!allAuthsChecked) errors.push("All authorizations must be agreed to");
+    return errors;
+  };
+
   const submit = async () => {
+    const errors = validateForm();
+    if (errors.length > 0) {
+      setSubmitError(errors.join(" · "));
+      return;
+    }
     setSubmitting(true);
     setSubmitError(null);
     try {
