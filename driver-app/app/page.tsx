@@ -86,8 +86,9 @@ function useTextToSpeech() {
   const [voiceName, setVoiceName] = useState<string>("");
   const [debugLog, setDebugLog] = useState<string[]>([]);
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
-  const allMaleVoicesRef = useRef<SpeechSynthesisVoice[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const dummyRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   // Add a debug entry visible on screen (so user doesn't need to open DevTools)
   const dlog = useCallback((msg: string) => {
@@ -174,7 +175,7 @@ function useTextToSpeech() {
     }
 
     if (audioRef.current) {
-      try { audioRef.current.pause(); } catch (_) { }
+      try { audioRef.current.pause(); } catch (_) {}
       audioRef.current = null;
     }
 
@@ -189,10 +190,10 @@ function useTextToSpeech() {
 
     const fireSpeak = () => {
       try {
-        // ── FULL RESET ──
-        // Chrome's speechSynthesis goes mute after SpeechRecognition runs.
-        // cancel() + resume() + small delay ensures a clean slate.
-        window.speechSynthesis.cancel();
+        // Only cancel if actually stuck/busy — cancelling constantly breaks Chrome
+        if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+            window.speechSynthesis.cancel();
+        }
         window.speechSynthesis.resume();
 
         const go = () => {
@@ -202,6 +203,7 @@ function useTextToSpeech() {
             dummy.volume = 0;
             dummy.rate = 10;
             if (voiceRef.current) dummy.voice = voiceRef.current;
+            dummyRef.current = dummy; // Prevent GC
 
             const utt = new SpeechSynthesisUtterance(text);
             if (voiceRef.current) utt.voice = voiceRef.current;
@@ -214,6 +216,7 @@ function useTextToSpeech() {
             };
             utt.onend = () => safeEnd("onend");
             utt.onerror = (e: any) => safeEnd(`onerror: ${e?.error || "?"}`);
+            utteranceRef.current = utt; // Prevent GC
 
             window.speechSynthesis.resume();
             window.speechSynthesis.speak(dummy);   // wake up
@@ -245,7 +248,7 @@ function useTextToSpeech() {
           }
         };
 
-        // Small delay after cancel to let Chrome flush its internal state
+        // Small delay to let Chrome flush its internal state if we just cancelled
         setTimeout(go, 150);
       } catch (e: any) {
         dlog(`exception: ${e?.message || e}`);
