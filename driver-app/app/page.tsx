@@ -63,38 +63,56 @@ function useTextToSpeech() {
   const [enabled, setEnabled] = useState(true);
   const [speaking, setSpeaking] = useState(false);
   const [supported, setSupported] = useState(false);
+  const [voiceName, setVoiceName] = useState<string>("");
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const allMaleVoicesRef = useRef<SpeechSynthesisVoice[]>([]);
+
+  // Names that strongly indicate a FEMALE voice — these are explicitly rejected
+  const FEMALE_PATTERN = /\b(Zira|Eva|Hazel|Susan|Tessa|Catherine|Vicki|Vicky|Anna|Karen|Samantha|Aria|Jenny|Michelle|Ava|Emma|Sonia|Salli|Joanna|Kendra|Kimberly|Olivia|Ivy|Paulina|Nora|Nuala|Heather|Allison|Linda|Lisa|Female)\b/i;
+  // Names that indicate a MALE voice — searched in priority order
+  const MALE_PATTERN = /\b(Guy|David|Mark|Eric|Andrew|Christopher|Roger|Steffan|Brandon|Davis|Tony|Daniel|Alex|Fred|Tom|Aaron|Bruce|Ralph|Albert|Arthur|James|Jason|Justin|Liam|Matthew|Oliver|Brian|Joey|Male)\b/i;
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
     setSupported(true);
-    // Restore previous setting
     const saved = localStorage.getItem("sts:tts:enabled");
     if (saved === "false") setEnabled(false);
+    const savedVoiceName = localStorage.getItem("sts:tts:voice");
 
     const pickVoice = () => {
       const voices = window.speechSynthesis.getVoices();
-      // Prefer professional male voices for a polite business tone
-      const preferred =
-        // Top picks: clear professional male voices across Win/Mac/Linux
-        voices.find(v => /Microsoft Guy|Microsoft David|Microsoft Mark|Microsoft Eric|Microsoft Andrew/i.test(v.name) && v.lang.startsWith("en")) ||
-        voices.find(v => /Daniel|Alex|Fred|Tom|Aaron/i.test(v.name) && v.lang.startsWith("en")) ||
-        voices.find(v => /Google UK English Male|Google US English Male/i.test(v.name)) ||
-        // Any male-sounding fallback
-        voices.find(v => v.lang.startsWith("en") && /male/i.test(v.name)) ||
-        // Last resort: any en-US local voice
-        voices.find(v => v.lang === "en-US" && v.localService) ||
-        voices.find(v => v.lang === "en-US") ||
-        voices[0];
-      voiceRef.current = preferred || null;
+      if (!voices || voices.length === 0) return;
+
+      // Build the priority list of MALE English voices
+      const enVoices = voices.filter(v => v.lang.startsWith("en"));
+      const maleVoices = enVoices
+        .filter(v => MALE_PATTERN.test(v.name) && !FEMALE_PATTERN.test(v.name))
+        // Prefer local (offline) voices first for reliability + lower latency
+        .sort((a, b) => Number(b.localService) - Number(a.localService));
+
+      // Fallback: anything en-US that isn't explicitly female
+      const fallbackPool = enVoices.filter(v => !FEMALE_PATTERN.test(v.name) && !maleVoices.includes(v));
+      const all = [...maleVoices, ...fallbackPool];
+      allMaleVoicesRef.current = all;
+
+      // If user previously chose a voice and it's still available, use it
+      if (savedVoiceName) {
+        const saved = all.find(v => v.name === savedVoiceName) || voices.find(v => v.name === savedVoiceName);
+        if (saved) {
+          voiceRef.current = saved;
+          setVoiceName(saved.name);
+          return;
+        }
+      }
+
+      const chosen = all[0] || voices.find(v => v.lang === "en-US") || voices[0];
+      voiceRef.current = chosen || null;
+      setVoiceName(chosen?.name || "");
     };
     pickVoice();
     window.speechSynthesis.onvoiceschanged = pickVoice;
 
-    // CHROME BUG WORKAROUND: speechSynthesis pauses itself after ~15s idle
-    // and after SpeechRecognition runs. Without this, only the FIRST utterance
-    // plays — subsequent speak() calls do nothing until resume() is called.
-    // This interval keeps the synth awake so all questions are spoken.
+    // Chrome bug workaround: speechSynthesis pauses after recognition + idle
     const keepAlive = setInterval(() => {
       try {
         if (window.speechSynthesis && !window.speechSynthesis.speaking) {
@@ -115,14 +133,11 @@ function useTextToSpeech() {
       return;
     }
     try {
-      // Cancel any pending utterance, then explicitly resume()
-      // (Chrome silently pauses synth after recognition; resume() un-pauses it)
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
 
       const utt = new SpeechSynthesisUtterance(text);
       if (voiceRef.current) utt.voice = voiceRef.current;
-      // Polite, measured business cadence: slightly slower, slightly lower pitch
       utt.rate = 0.95;
       utt.pitch = 0.95;
       utt.volume = 1.0;
@@ -130,8 +145,6 @@ function useTextToSpeech() {
       utt.onend = () => { setSpeaking(false); onEnd?.(); };
       utt.onerror = () => { setSpeaking(false); onEnd?.(); };
 
-      // Small delay after cancel() lets Chrome clear its synth state cleanly
-      // before the next speak — without this, queued utterances can be dropped
       setTimeout(() => {
         try {
           window.speechSynthesis.resume();
@@ -146,6 +159,20 @@ function useTextToSpeech() {
       onEnd?.();
     }
   }, [supported, enabled]);
+
+  // Cycle to the next available male voice (or any non-female fallback)
+  const cycleVoice = useCallback(() => {
+    const list = allMaleVoicesRef.current;
+    if (!list.length) return null;
+    const currentName = voiceRef.current?.name;
+    const currentIdx = list.findIndex(v => v.name === currentName);
+    const nextIdx = (currentIdx + 1) % list.length;
+    const next = list[nextIdx];
+    voiceRef.current = next;
+    setVoiceName(next.name);
+    try { localStorage.setItem("sts:tts:voice", next.name); } catch (_) {}
+    return next;
+  }, []);
 
   const stop = useCallback(() => {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
@@ -164,7 +191,7 @@ function useTextToSpeech() {
     });
   }, []);
 
-  return { speak, stop, speaking, supported, enabled, toggle };
+  return { speak, stop, speaking, supported, enabled, toggle, cycleVoice, voiceName };
 }
 
 function useSpeech(onResult: (r: { final: string; interim: string; full: string }) => void) {
@@ -856,6 +883,29 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
         </div>
         <div className="flex items-center gap-2">
           {tts.supported && (
+            <button
+              onClick={() => {
+                const next = tts.cycleVoice();
+                // Re-speak current question with new voice so user can hear it
+                if (next && aiMessage) {
+                  setTimeout(() => tts.speak(aiMessage), 100);
+                }
+              }}
+              title={tts.voiceName ? `Voice: ${tts.voiceName} — tap to switch` : "Switch voice"}
+              className="px-2 py-1.5 rounded text-[10px] uppercase tracking-widest font-bold"
+              style={{
+                background: "transparent",
+                color: BRAND.gold,
+                border: `1px solid ${BRAND.gold}50`,
+                maxWidth: 140,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}>
+              {tts.voiceName ? tts.voiceName.replace(/Microsoft |Desktop|Online/g, "").trim().slice(0, 10) : "Voice"}
+            </button>
+          )}
+          {tts.supported && (
             <button onClick={tts.toggle}
               title={tts.enabled ? "Mute Graviton" : "Unmute Graviton"}
               className="px-2 py-1.5 rounded text-[10px] uppercase tracking-widest font-bold"
@@ -864,7 +914,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
                 color: tts.enabled ? BRAND.navy : BRAND.gold,
                 border: `1px solid ${BRAND.gold}50`
               }}>
-              {tts.enabled ? "Voice On" : "Muted"}
+              {tts.enabled ? "On" : "Mute"}
             </button>
           )}
           <button onClick={() => setShowLog(s => !s)}
