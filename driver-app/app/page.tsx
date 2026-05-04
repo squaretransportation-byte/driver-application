@@ -73,9 +73,9 @@ function saveProgress(payload: any) {
     // Don't persist signature — large base64 canvas data
     delete safe.signature;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
-  } catch(e){}
+  } catch (e) { }
 }
-function loadProgress() { try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : null; } catch(e) { return null; } }
+function loadProgress() { try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
 
 // Text-to-speech: makes the AI read questions aloud like a real interview.
 // Uses browser SpeechSynthesis (free, no API call needed).
@@ -174,7 +174,7 @@ function useTextToSpeech() {
     }
 
     if (audioRef.current) {
-      try { audioRef.current.pause(); } catch (_) {}
+      try { audioRef.current.pause(); } catch (_) { }
       audioRef.current = null;
     }
 
@@ -224,7 +224,7 @@ function useTextToSpeech() {
             setTimeout(() => {
               if (!endCalled && !window.speechSynthesis.speaking) {
                 dlog("FAILSAFE: onstart never fired");
-                try { window.speechSynthesis.cancel(); } catch (_) {}
+                try { window.speechSynthesis.cancel(); } catch (_) { }
                 safeEnd("failsafe-nostart");
               }
             }, 4000);
@@ -235,7 +235,7 @@ function useTextToSpeech() {
             setTimeout(() => {
               if (!endCalled) {
                 dlog(`FAILSAFE: absolute timeout (${maxMs}ms)`);
-                try { window.speechSynthesis.cancel(); } catch (_) {}
+                try { window.speechSynthesis.cancel(); } catch (_) { }
                 safeEnd("failsafe-timeout");
               }
             }, maxMs);
@@ -256,7 +256,7 @@ function useTextToSpeech() {
     const isBusy = window.speechSynthesis.speaking || window.speechSynthesis.pending;
     if (isBusy) {
       dlog("synth busy, cancel + 250ms");
-      try { window.speechSynthesis.cancel(); } catch (_) {}
+      try { window.speechSynthesis.cancel(); } catch (_) { }
       setTimeout(fireSpeak, 250);
     } else {
       fireSpeak();
@@ -273,19 +273,19 @@ function useTextToSpeech() {
     const next = list[nextIdx];
     voiceRef.current = next;
     setVoiceName(next.name);
-    try { localStorage.setItem("sts:tts:voice", next.name); } catch (_) {}
+    try { localStorage.setItem("sts:tts:voice", next.name); } catch (_) { }
     return next;
   }, []);
 
   const stop = useCallback(() => {
     // Stop server-TTS audio (ElevenLabs MP3 playback)
     if (audioRef.current) {
-      try { audioRef.current.pause(); audioRef.current.currentTime = 0; } catch (_) {}
+      try { audioRef.current.pause(); audioRef.current.currentTime = 0; } catch (_) { }
       audioRef.current = null;
     }
     // Stop browser TTS
     if (typeof window !== "undefined" && window.speechSynthesis) {
-      try { window.speechSynthesis.cancel(); } catch (_) {}
+      try { window.speechSynthesis.cancel(); } catch (_) { }
     }
     setSpeaking(false);
   }, []);
@@ -293,15 +293,15 @@ function useTextToSpeech() {
   const toggle = useCallback(() => {
     setEnabled(prev => {
       const next = !prev;
-      try { localStorage.setItem("sts:tts:enabled", String(next)); } catch (_) {}
+      try { localStorage.setItem("sts:tts:enabled", String(next)); } catch (_) { }
       if (!next) {
         // Muting — stop both server-TTS audio and browser TTS
         if (audioRef.current) {
-          try { audioRef.current.pause(); } catch (_) {}
+          try { audioRef.current.pause(); } catch (_) { }
           audioRef.current = null;
         }
         if (typeof window !== "undefined" && window.speechSynthesis) {
-          try { window.speechSynthesis.cancel(); } catch (_) {}
+          try { window.speechSynthesis.cancel(); } catch (_) { }
         }
         setSpeaking(false);
       }
@@ -342,16 +342,16 @@ function useSpeech(onResult: (r: { final: string; interim: string; full: string 
     r.onend = () => setListening(false);
     r.onerror = () => setListening(false);
     recRef.current = r;
-    return () => { try { r.stop(); } catch(_){} };
+    return () => { try { r.stop(); } catch (_) { } };
   }, []);
 
   const start = useCallback(() => {
     if (!recRef.current) return;
-    try { recRef.current.start(); setListening(true); } catch(_){}
+    try { recRef.current.start(); setListening(true); } catch (_) { }
   }, []);
   const stop = useCallback(() => {
     if (!recRef.current) return;
-    try { recRef.current.stop(); } catch(_){}
+    try { recRef.current.stop(); } catch (_) { }
     setListening(false);
   }, []);
   return { listening, supported, start, stop };
@@ -373,7 +373,7 @@ function Field({ label, required, children, hint }: any) {
   return (
     <label className="block">
       <span className="block text-[11px] font-semibold tracking-[0.18em] uppercase mb-1.5"
-            style={{ color: BRAND.gold }}>
+        style={{ color: BRAND.gold }}>
         {label} {required && <span style={{ color: BRAND.maroonLight }}>*</span>}
       </span>
       {children}
@@ -968,29 +968,6 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
         </div>
         <div className="flex items-center gap-2">
           {tts.supported && (
-            <button
-              onClick={() => {
-                const next = tts.cycleVoice();
-                // Re-speak current question with new voice so user can hear it
-                if (next && aiMessage) {
-                  setTimeout(() => tts.speak(aiMessage), 100);
-                }
-              }}
-              title={tts.voiceName ? `Voice: ${tts.voiceName} — tap to switch` : "Switch voice"}
-              className="px-2 py-1.5 rounded text-[10px] uppercase tracking-widest font-bold"
-              style={{
-                background: "transparent",
-                color: BRAND.gold,
-                border: `1px solid ${BRAND.gold}50`,
-                maxWidth: 140,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}>
-              {tts.voiceName ? tts.voiceName.replace(/^Microsoft\s+/i, "").replace(/\s*(Desktop|Online|Mobile).*$/i, "").trim() : "Voice"}
-            </button>
-          )}
-          {tts.supported && (
             <button onClick={tts.toggle}
               title={tts.enabled ? "Mute Graviton" : "Unmute Graviton"}
               className="px-2 py-1.5 rounded text-[10px] uppercase tracking-widest font-bold"
@@ -1295,7 +1272,7 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
 
   return (
     <div className="fixed inset-y-0 right-0 w-full sm:w-[420px] z-50 flex flex-col shadow-2xl"
-         style={{ background: BRAND.ink, borderLeft: `1px solid ${BRAND.gold}30` }}>
+      style={{ background: BRAND.ink, borderLeft: `1px solid ${BRAND.gold}30` }}>
       <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: BRAND.gold + "20", background: BRAND.navy }}>
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-md" style={{ background: BRAND.maroon }}><Sparkles size={16} style={{ color: BRAND.gold }} /></div>
@@ -1390,7 +1367,7 @@ function Section({ title, subtitle, children, icon: Icon }: any) {
   );
 }
 
-const STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"];
+const STATES = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"];
 
 function StepWelcome({ next, startInterview }: any) {
   return (
@@ -1508,7 +1485,7 @@ function StepLicense({ data, set }: any) {
       <div className="grid sm:grid-cols-5 gap-3 mb-5">
         <Field label="State"><Select value={data.licenseState} onChange={(v: string) => set("licenseState", v)} options={STATES} /></Field>
         <Field label="License #" required><VoiceInput value={data.licenseNumber} onChange={(v: string) => set("licenseNumber", v)} /></Field>
-        <Field label="Class" required><Select value={data.licenseClass} onChange={(v: string) => set("licenseClass", v)} options={["A","B","C"]} /></Field>
+        <Field label="Class" required><Select value={data.licenseClass} onChange={(v: string) => set("licenseClass", v)} options={["A", "B", "C"]} /></Field>
         <Field label="Endorsements"><VoiceInput value={data.licenseEndorsements} onChange={(v: string) => set("licenseEndorsements", v)} placeholder="H, N, T, X" /></Field>
         <Field label="Expiration" required><VoiceInput type="date" value={data.licenseExpiration} onChange={(v: string) => set("licenseExpiration", v)} /></Field>
       </div>
@@ -1785,10 +1762,10 @@ export default function App() {
 
   const completionScore = (() => {
     let total = 0, filled = 0;
-    const required = ["firstName","lastName","dob","ssn","email","phone","position",
-      "licenseState","licenseNumber","licenseClass","licenseExpiration","medCardExpiration",
-      "everDeniedLicense","everSuspended","everConvictedCMV","everConvictedLaw",
-      "daRefused","daPositive","daPreEmpPositive"];
+    const required = ["firstName", "lastName", "dob", "ssn", "email", "phone", "position",
+      "licenseState", "licenseNumber", "licenseClass", "licenseExpiration", "medCardExpiration",
+      "everDeniedLicense", "everSuspended", "everConvictedCMV", "everConvictedLaw",
+      "daRefused", "daPositive", "daPreEmpPositive"];
     required.forEach(f => { total++; if (data[f]) filled++; });
     if (data.employers[0]?.name) filled += 5;
     total += 5;
