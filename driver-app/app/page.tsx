@@ -688,6 +688,8 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
   const finalTranscriptRef = useRef("");
   const interimRef = useRef("");
   const submitLockRef = useRef(false);
+  const listeningRef = useRef(false);       // true when we WANT recognition active
+  const autoSubmitRef = useRef<() => void>(() => {}); // always latest autoSubmit
 
   // Total required fields, for progress display
   const TOTAL_FIELDS = 36;
@@ -840,16 +842,29 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
       // Reset silence timer on activity
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = setTimeout(() => {
-        autoSubmit();
+        autoSubmitRef.current(); // use ref to always call latest autoSubmit
       }, 2000);
     };
     r.onerror = (e: any) => {
-      if (e.error === "no-speech" || e.error === "aborted") {
-        // Restart automatically if still in listening mode
+      // Chrome fires errors like "no-speech" or "aborted" — restart if we should still be listening
+      if (listeningRef.current && (e.error === "no-speech" || e.error === "aborted")) {
+        setTimeout(() => {
+          if (listeningRef.current) {
+            try { r.start(); } catch (_) { /* noop */ }
+          }
+        }, 300);
       }
     };
     r.onend = () => {
-      // Recognition stopped — handled by submit logic
+      // Chrome kills recognition unexpectedly (especially after TTS).
+      // Auto-restart if we're still supposed to be listening.
+      if (listeningRef.current && !submitLockRef.current) {
+        setTimeout(() => {
+          if (listeningRef.current && !submitLockRef.current) {
+            try { r.start(); } catch (_) { /* noop */ }
+          }
+        }, 200);
+      }
     };
     recognitionRef.current = r;
     return () => {
@@ -864,6 +879,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
       setPhase("error");
       return;
     }
+    listeningRef.current = true; // signal that we want recognition active
     setPhase("listening");
     setTranscript("");
     finalTranscriptRef.current = "";
@@ -883,6 +899,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
   const autoSubmit = useCallback(() => {
     if (submitLockRef.current) return;
     submitLockRef.current = true;
+    listeningRef.current = false; // stop auto-restart
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     // abort() releases the audio resource IMMEDIATELY, unlike stop() which
     // waits for final results and can hold the audio system hostage for
@@ -905,8 +922,12 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
     });
   }, [sendTurn, startListening]);
 
+  // Keep ref synced so the onresult closure always calls the latest autoSubmit
+  useEffect(() => { autoSubmitRef.current = autoSubmit; }, [autoSubmit]);
+
   const skipQuestion = useCallback(() => {
     if (phase !== "listening" && phase !== "speaking") return;
+    listeningRef.current = false;
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     try { recognitionRef.current?.stop(); } catch (_) { /* noop */ }
     tts.stop();
@@ -925,6 +946,7 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
   }, [aiMessage, tts]);
 
   const endCall = useCallback(() => {
+    listeningRef.current = false;
     try { recognitionRef.current?.stop(); } catch (_) { /* noop */ }
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     tts.stop();
