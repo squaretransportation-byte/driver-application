@@ -253,14 +253,8 @@ function useTextToSpeech() {
       }
     };
 
-    const isBusy = window.speechSynthesis.speaking || window.speechSynthesis.pending;
-    if (isBusy) {
-      dlog("synth busy, cancel + 250ms");
-      try { window.speechSynthesis.cancel(); } catch (_) { }
-      setTimeout(fireSpeak, 250);
-    } else {
-      fireSpeak();
-    }
+    // fireSpeak always does a full cancel+resume internally, so just call it
+    fireSpeak();
   }, [supported, enabled, dlog]);
 
   // Cycle to the next available male voice (or any non-female fallback)
@@ -875,7 +869,15 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
     finalTranscriptRef.current = "";
     interimRef.current = "";
     submitLockRef.current = false;
-    try { recognitionRef.current.start(); } catch (_) { /* already started */ }
+    // Chrome throws InvalidStateError if start() is called too soon after abort()
+    try {
+      recognitionRef.current.start();
+    } catch (_) {
+      // Retry once after a short delay
+      setTimeout(() => {
+        try { recognitionRef.current?.start(); } catch (_2) { /* give up silently */ }
+      }, 300);
+    }
   }, []);
 
   const autoSubmit = useCallback(() => {
