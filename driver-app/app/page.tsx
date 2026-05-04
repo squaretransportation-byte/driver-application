@@ -1571,6 +1571,8 @@ function StepEmployment({ data, set }: any) {
 }
 
 function StepDA({ data, set }: any) {
+  const isDisqualified = data.daRefused === "Yes" || data.daPositive === "Yes" || data.daPreEmpPositive === "Yes";
+
   return (
     <Section title="Drug & Alcohol Disclosure" subtitle="49 CFR Part 382" icon={Pill}>
       <div className="space-y-3 mb-6">
@@ -1585,6 +1587,16 @@ function StepDA({ data, set }: any) {
           </div>
         ))}
       </div>
+      
+      {isDisqualified && (
+        <div className="mt-4 p-4 rounded flex gap-3 items-start" style={{ background: BRAND.maroon + "20", border: `1px solid ${BRAND.maroon}` }}>
+           <AlertCircle size={20} style={{ color: BRAND.maroonLight, flexShrink: 0 }} />
+           <div className="text-sm" style={{ color: BRAND.cream }}>
+             <strong style={{ color: BRAND.maroonLight, display: 'block', marginBottom: 4 }}>Notice of Disqualification</strong>
+             Based on your answers, you do not meet the minimum FMCSA safety qualifications for employment. You cannot proceed with this application.
+           </div>
+        </div>
+      )}
     </Section>
   );
 }
@@ -1829,10 +1841,12 @@ export default function App() {
     }
     if (!signatureValid) errors.push("E-Signature is required");
     if (!allAuthsChecked) errors.push("All authorizations must be agreed to");
+    
     return errors;
   };
 
   const submit = async () => {
+    const isDisqualified = data.daRefused === "Yes" || data.daPositive === "Yes" || data.daPreEmpPositive === "Yes";
     const errors = validateForm();
     if (errors.length > 0) {
       setSubmitError(errors.join(" · "));
@@ -1850,10 +1864,18 @@ export default function App() {
         return;
       }
 
+      const payload = {
+        data: { ...data, isDisqualified },
+        files: compressedFiles,
+        signature,
+        // Route all applications from this form to the specified email
+        destinationEmail: "squaretransportationinc@live.com"
+      };
+
       const res = await fetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data, files: compressedFiles, signature }),
+        body: JSON.stringify(payload),
       });
       const result = await res.json();
       if (!res.ok) {
