@@ -57,6 +57,80 @@ const STORAGE_KEY = "sts:onboarding:v1";
 function saveProgress(data: any) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e){} }
 function loadProgress() { try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : null; } catch(e) { return null; } }
 
+// Text-to-speech: makes the AI read questions aloud like a real interview.
+// Uses browser SpeechSynthesis (free, no API call needed).
+function useTextToSpeech() {
+  const [enabled, setEnabled] = useState(true);
+  const [speaking, setSpeaking] = useState(false);
+  const [supported, setSupported] = useState(false);
+  const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    setSupported(true);
+    // Restore previous setting
+    const saved = localStorage.getItem("sts:tts:enabled");
+    if (saved === "false") setEnabled(false);
+
+    const pickVoice = () => {
+      const voices = window.speechSynthesis.getVoices();
+      // Prefer high-quality natural-sounding voices
+      const preferred =
+        voices.find(v => /Samantha|Aaron|Karen|Daniel|Microsoft Aria|Google US English/i.test(v.name) && v.lang.startsWith("en")) ||
+        voices.find(v => v.lang === "en-US" && v.localService) ||
+        voices.find(v => v.lang === "en-US") ||
+        voices[0];
+      voiceRef.current = preferred || null;
+    };
+    pickVoice();
+    window.speechSynthesis.onvoiceschanged = pickVoice;
+    return () => {
+      window.speechSynthesis.cancel();
+    };
+  }, []);
+
+  const speak = useCallback((text: string, onEnd?: () => void) => {
+    if (!supported || !enabled || !text) {
+      onEnd?.();
+      return;
+    }
+    try {
+      window.speechSynthesis.cancel();
+      const utt = new SpeechSynthesisUtterance(text);
+      if (voiceRef.current) utt.voice = voiceRef.current;
+      utt.rate = 1.0;
+      utt.pitch = 1.0;
+      utt.volume = 1.0;
+      utt.onstart = () => setSpeaking(true);
+      utt.onend = () => { setSpeaking(false); onEnd?.(); };
+      utt.onerror = () => { setSpeaking(false); onEnd?.(); };
+      window.speechSynthesis.speak(utt);
+    } catch (e) {
+      setSpeaking(false);
+      onEnd?.();
+    }
+  }, [supported, enabled]);
+
+  const stop = useCallback(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    setSpeaking(false);
+  }, []);
+
+  const toggle = useCallback(() => {
+    setEnabled(prev => {
+      const next = !prev;
+      try { localStorage.setItem("sts:tts:enabled", String(next)); } catch (_) {}
+      if (!next && typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      return next;
+    });
+  }, []);
+
+  return { speak, stop, speaking, supported, enabled, toggle };
+}
+
 function useSpeech(onResult: (r: { final: string; interim: string; full: string }) => void) {
   const recRef = useRef<any>(null);
   const [listening, setListening] = useState(false);
@@ -98,7 +172,7 @@ function useSpeech(onResult: (r: { final: string; interim: string; full: string 
   return { listening, supported, start, stop };
 }
 
-// Calls our serverless API route — API key never leaves the server
+// Calls our serverless API route â€” API key never leaves the server
 async function askClaude(messages: any[], system = "", model = "claude-haiku-4-5-20251001") {
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -255,40 +329,155 @@ function SignaturePad({ onChange, value }: any) {
   );
 }
 
-function UploadZone({ id, label, hint, file, onFile }: any) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const handleFile = (f: File | null | undefined) => {
+function UploadZone({ id, label, hint, file, onFile, required, accept }: any) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFile = async (f: File | null | undefined) => {
     if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => onFile({ name: f.name, size: f.size, type: f.type, dataUrl: reader.result });
-    reader.readAsDataURL(f);
+    setError(null);
+    setBusy(true);
+    try {
+      // Read into data URL
+      const dataUrl: string = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("Could not read file"));
+        reader.readAsDataURL(f);
+      });
+      let payload: any = { name: f.name, size: f.size, type: f.type, dataUrl };
+      // Compress images on the fly so phone photos don't blow up payloads
+      if (f.type.startsWith("image/") && typeof window !== "undefined") {
+        try {
+          const mod = await import("../lib/image-compress");
+          payload = await mod.compressImageIfPossible(payload);
+        } catch (_) { /* compression optional */ }
+      }
+      // Soft warning for very small images (likely blurry / accidental)
+      if (f.type.startsWith("image/") && payload.size < 30_000) {
+        setError("Image looks very small â€” make sure it's clear and readable.");
+      }
+      // Hard cap at ~4 MB after compression
+      if (payload.size > 4 * 1024 * 1024) {
+        setError("File is too large (max 4 MB). Try a clearer but smaller photo.");
+        setBusy(false);
+        return;
+      }
+      onFile(payload);
+    } catch (e: any) {
+      setError(e.message || "Upload failed");
+    }
+    setBusy(false);
   };
+
+  const isImage = file && (file.type || "").startsWith("image/");
+  const isPdf = file && (file.type || "").includes("pdf");
+
   return (
-    <div className="relative p-4 rounded-lg border-2 border-dashed transition-all cursor-pointer"
-      style={{ borderColor: file ? BRAND.gold : "rgba(184,146,74,0.35)", background: "rgba(255,255,255,0.02)" }}
-      onClick={() => inputRef.current?.click()}
-      onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}
-      onDragOver={(e) => e.preventDefault()}>
-      <input ref={inputRef} type="file" accept="image/*,application/pdf" className="hidden"
+    <div className="relative p-3 rounded-lg transition-all"
+      style={{
+        border: `2px ${file ? "solid" : "dashed"} ${file ? BRAND.gold : "rgba(184,146,74,0.35)"}`,
+        background: file ? "rgba(184,146,74,0.06)" : "rgba(255,255,255,0.02)",
+      }}>
+      <input ref={fileInputRef} type="file" accept={accept || "image/*,application/pdf"} className="hidden"
         onChange={(e) => handleFile(e.target.files?.[0])} />
-      <div className="flex items-start gap-3">
-        <div className="p-2 rounded" style={{ background: file ? BRAND.gold + "20" : "rgba(184,146,74,0.1)" }}>
-          {file ? <Check size={18} style={{ color: BRAND.gold }} /> : <Upload size={18} style={{ color: BRAND.gold }} />}
-        </div>
-        <div className="flex-1">
-          <div className="text-sm font-bold" style={{ color: BRAND.cream, fontFamily: "Oswald, sans-serif", letterSpacing: "0.05em" }}>{label}</div>
-          {file ? (
-            <div className="text-xs mt-1" style={{ color: BRAND.gold }}>{file.name} • {(file.size / 1024).toFixed(0)} KB</div>
-          ) : (
-            <div className="text-xs mt-1" style={{ color: "#8896A8" }}>{hint || "Click or drop file"}</div>
+      {/* capture="environment" hints mobile to open the back camera directly */}
+      <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden"
+        onChange={(e) => handleFile(e.target.files?.[0])} />
+
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="text-sm font-bold" style={{ color: BRAND.cream, fontFamily: "Oswald, sans-serif", letterSpacing: "0.05em" }}>
+              {label}
+            </div>
+            {required && !file && (
+              <span className="px-1.5 py-0.5 rounded text-[8px] uppercase tracking-widest font-bold"
+                style={{ background: BRAND.maroon, color: BRAND.cream }}>Required</span>
+            )}
+            {file && (
+              <span className="px-1.5 py-0.5 rounded text-[8px] uppercase tracking-widest font-bold"
+                style={{ background: BRAND.gold, color: BRAND.navy }}>Uploaded</span>
+            )}
+          </div>
+          {!file && hint && (
+            <div className="text-[11px] mt-0.5" style={{ color: "#8896A8" }}>{hint}</div>
           )}
         </div>
         {file && (
-          <button type="button" onClick={(e) => { e.stopPropagation(); onFile(null); }} className="p-1">
+          <button type="button" onClick={() => onFile(null)} className="p-1 flex-shrink-0">
             <Trash2 size={14} style={{ color: BRAND.maroonLight }} />
           </button>
         )}
       </div>
+
+      {/* Preview */}
+      {file && (
+        <div className="mb-2">
+          {isImage ? (
+            <div className="relative rounded overflow-hidden" style={{ background: "#000", maxHeight: 180 }}>
+              <img src={file.dataUrl} alt={label}
+                className="w-full h-auto object-contain"
+                style={{ maxHeight: 180, display: "block", margin: "0 auto" }} />
+            </div>
+          ) : isPdf ? (
+            <div className="flex items-center gap-2 px-2 py-3 rounded" style={{ background: "rgba(0,0,0,0.3)" }}>
+              <FileText size={20} style={{ color: BRAND.gold }} />
+              <div className="text-xs truncate" style={{ color: BRAND.cream }}>{file.name}</div>
+            </div>
+          ) : null}
+          <div className="text-[10px] mt-1 text-right" style={{ color: BRAND.gold }}>
+            {(file.size / 1024).toFixed(0)} KB Â· {file.name}
+          </div>
+        </div>
+      )}
+
+      {/* Action buttons */}
+      {!file && (
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" disabled={busy}
+            onClick={() => cameraInputRef.current?.click()}
+            className="flex items-center justify-center gap-1.5 py-2.5 rounded text-[11px] uppercase tracking-widest font-bold disabled:opacity-50"
+            style={{ background: BRAND.maroon, color: BRAND.cream }}>
+            ðŸ“· Take Photo
+          </button>
+          <button type="button" disabled={busy}
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center justify-center gap-1.5 py-2.5 rounded text-[11px] uppercase tracking-widest font-bold disabled:opacity-50"
+            style={{ background: "transparent", color: BRAND.gold, border: `1px solid ${BRAND.gold}50` }}>
+            ðŸ“ Upload File
+          </button>
+        </div>
+      )}
+      {file && (
+        <div className="flex gap-2">
+          <button type="button" onClick={() => cameraInputRef.current?.click()}
+            className="flex-1 py-2 rounded text-[10px] uppercase tracking-widest font-bold"
+            style={{ background: "transparent", color: BRAND.gold, border: `1px solid ${BRAND.gold}40` }}>
+            ðŸ“· Re-take
+          </button>
+          <button type="button" onClick={() => fileInputRef.current?.click()}
+            className="flex-1 py-2 rounded text-[10px] uppercase tracking-widest font-bold"
+            style={{ background: "transparent", color: BRAND.gold, border: `1px solid ${BRAND.gold}40` }}>
+            ðŸ“ Replace
+          </button>
+        </div>
+      )}
+
+      {busy && (
+        <div className="mt-2 text-[11px] text-center" style={{ color: BRAND.gold }}>
+          Processing...
+        </div>
+      )}
+      {error && (
+        <div className="mt-2 px-2 py-1.5 rounded text-[11px] flex items-start gap-1.5"
+          style={{ background: BRAND.maroon + "30", color: BRAND.cream, border: `1px solid ${BRAND.maroonLight}` }}>
+          <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>{error}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -302,7 +491,7 @@ const INTERVIEW_QUESTIONS: any[] = [
   { id: "ssn", section: "Personal", q: "What is your Social Security number? Format: XXX-XX-XXXX.", type: "text" },
   { id: "phone", section: "Personal", q: "Best phone number to reach you?", type: "tel" },
   { id: "email", section: "Personal", q: "Email address?", type: "email" },
-  { id: "position", section: "Personal", q: "What position are you applying for? Options: Company Driver Per Mile, Owner Operator, Lease Purchase, Flat Rate Driver, or Local Driver.", type: "select", options: ["Company Driver — Per Mile", "Owner Operator", "Lease Purchase", "Flat Rate Driver", "Local Driver"] },
+  { id: "position", section: "Personal", q: "What position are you applying for? Options: Company Driver Per Mile, Owner Operator, Lease Purchase, Flat Rate Driver, or Local Driver.", type: "select", options: ["Company Driver â€” Per Mile", "Owner Operator", "Lease Purchase", "Flat Rate Driver", "Local Driver"] },
   { id: "dateAvailable", section: "Personal", q: "When are you available to start work?", type: "date" },
   { id: "legalRight", section: "Personal", q: "Do you have legal right to work in the United States?", type: "yesno" },
   { id: "_res0_street", section: "Residency", q: "Now your current address. What's the street?", type: "text" },
@@ -339,321 +528,528 @@ const INTERVIEW_QUESTIONS: any[] = [
   { id: "daPreEmpPositive", section: "D&A", q: "Have you ever tested positive on a pre-employment drug or alcohol test for a job you applied to but didn't get?", type: "yesno" },
   { id: "daExplain", section: "D&A", q: "You answered yes above. Please describe and confirm Return-to-Duty status.", type: "textarea", showIf: (d: any) => [d.daRefused, d.daPositive, d.daPreEmpPositive].includes("Yes") },
   { id: "_edu_hs", section: "Education", q: "What high school did you attend?", type: "text", optional: true },
-  { id: "hosTotal", section: "Compliance", q: "How many total on-duty hours have you worked in the past 7 days? Required by §395.8.", type: "text" },
+  { id: "hosTotal", section: "Compliance", q: "How many total on-duty hours have you worked in the past 7 days? Required by Â§395.8.", type: "text" },
   { id: "hosLastRelieved", section: "Compliance", q: "When were you last relieved from duty? Date and time.", type: "text" },
   { id: "otherEmployer", section: "Other Work", q: "Are you currently working for another employer?", type: "yesno" },
   { id: "otherEmployerIntent", section: "Other Work", q: "Do you intend to work for another employer while employed by Square Transportation?", type: "yesno" }
 ];
 
 function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
-  const [idx, setIdx] = useState(0);
-  const [answer, setAnswer] = useState("");
-  const [history, setHistory] = useState<any[]>([]);
-  const [processing, setProcessing] = useState(false);
-  const [autoMode, setAutoMode] = useState(true);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const speech = useSpeech(({ full }) => setAnswer(full));
+  type Phase = "connecting" | "speaking" | "listening" | "processing" | "error" | "ended";
+  const [history, setHistory] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [phase, setPhase] = useState<Phase>("connecting");
+  const [aiMessage, setAiMessage] = useState("");
+  const [transcript, setTranscript] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [showLog, setShowLog] = useState(false);
+  const [collectedCount, setCollectedCount] = useState(0);
+  const tts = useTextToSpeech();
+  const dataRef = useRef(data);
+  useEffect(() => { dataRef.current = data; }, [data]);
 
-  const activeQuestions = INTERVIEW_QUESTIONS.filter(q => !q.showIf || q.showIf(data));
-  const current = activeQuestions[idx];
-  const progress = Math.round((idx / activeQuestions.length) * 100);
+  // Speech recognition
+  const recognitionRef = useRef<any>(null);
+  const silenceTimerRef = useRef<any>(null);
+  const finalTranscriptRef = useRef("");
+  const interimRef = useRef("");
+  const submitLockRef = useRef(false);
 
-  useEffect(() => {
-    if (open && idx === 0 && history.length === 0) {
-      setHistory([{ role: "assistant", text: "Hi! I'm going to walk you through your driver application. You can speak your answers or type them. Ready? Let's begin." }]);
-      setTimeout(() => addQuestion(0), 800);
+  // Total required fields, for progress display
+  const TOTAL_FIELDS = 36;
+
+  // Apply extracted fields from AI to form data â€” supports dot notation for nested
+  const applyExtractedFields = useCallback((fields: Record<string, any>) => {
+    if (!fields || Object.keys(fields).length === 0) return;
+    setData((prev: any) => {
+      const next = JSON.parse(JSON.stringify(prev));
+      for (const [key, value] of Object.entries(fields)) {
+        if (value == null || value === "") continue;
+        if (key.includes(".")) {
+          const parts = key.split(".");
+          let target: any = next;
+          for (let i = 0; i < parts.length - 1; i++) {
+            const p = parts[i];
+            const nextP = parts[i + 1];
+            const isArrayIdx = /^\d+$/.test(nextP);
+            if (/^\d+$/.test(p)) {
+              const idx = parseInt(p);
+              while (target.length <= idx) target.push({});
+              target = target[idx];
+            } else {
+              if (!target[p]) target[p] = isArrayIdx ? [] : {};
+              target = target[p];
+            }
+          }
+          target[parts[parts.length - 1]] = value;
+        } else if (key === "education" && typeof value === "object") {
+          next.education = { ...next.education, ...value };
+        } else if (key === "noAccidents" || key === "noConvictions") {
+          next[key] = value === true || value === "true" || value === "Yes";
+        } else {
+          next[key] = value;
+        }
+      }
+      return next;
+    });
+  }, [setData]);
+
+  // Flatten current form data for the API to know what's already collected
+  const flattenForState = useCallback((d: any): Record<string, any> => {
+    const out: Record<string, any> = {};
+    const keys = ["firstName", "middleName", "lastName", "dob", "ssn", "phone", "email",
+      "position", "dateAvailable", "legalRight", "licenseState", "licenseNumber",
+      "licenseClass", "licenseEndorsements", "licenseExpiration", "medCardExpiration",
+      "everDeniedLicense", "everSuspended", "everConvictedCMV", "everConvictedLaw",
+      "complianceExplain", "daRefused", "daPositive", "daPreEmpPositive", "daExplain",
+      "hosTotal", "hosLastRelieved", "otherEmployer", "otherEmployerIntent"];
+    keys.forEach(k => { if (d[k]) out[k] = d[k]; });
+    if (d.experience?.[0]?.equipment) {
+      out["experience.0.equipment"] = d.experience[0].equipment;
+      if (d.experience[0].from) out["experience.0.from"] = d.experience[0].from;
+      if (d.experience[0].miles) out["experience.0.miles"] = d.experience[0].miles;
     }
-  }, [open]);
+    if (d.employers?.[0]?.name) {
+      ["name", "position", "startDate", "endDate", "phone", "reasonLeaving"].forEach(f => {
+        if (d.employers[0][f]) out[`employers.0.${f}`] = d.employers[0][f];
+      });
+    }
+    return out;
+  }, []);
 
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [history]);
-
-  const addQuestion = (i: number) => {
-    const q = activeQuestions[i];
-    if (!q) return;
-    setHistory(prev => [...prev, { role: "assistant", text: q.q, section: q.section }]);
-  };
-
-  const normalizeAnswer = async (rawAnswer: string, question: any) => {
+  // Send a turn to the API
+  const sendTurn = useCallback(async (msgs: typeof history) => {
+    setPhase("processing");
+    setError(null);
     try {
-      let typeHint = "";
-      if (question.type === "date") typeHint = "Return ONLY the date in YYYY-MM-DD format. If user said 'present' or 'now', return today's date " + new Date().toISOString().split("T")[0] + ".";
-      else if (question.type === "yesno") typeHint = "Return ONLY 'Yes' or 'No'.";
-      else if (question.type === "yesno_inverse") typeHint = "The question asks if they HAVE had something. If yes, return 'false'. If no/none, return 'true'. Return ONLY 'true' or 'false'.";
-      else if (question.type === "tel") typeHint = "Return ONLY the phone number as digits, formatted XXX-XXX-XXXX.";
-      else if (question.type === "email") typeHint = "Return ONLY the email address, lowercase.";
-      else if (question.type === "select") typeHint = `Return ONLY one of these exact values: ${question.options.join(" | ")}.`;
-      else if (question.id === "ssn") typeHint = "Return ONLY the SSN formatted XXX-XX-XXXX.";
-      else if (question.id === "licenseState" || question.id.endsWith("_state")) typeHint = "Return ONLY the 2-letter US state code (uppercase).";
-      else if (question.id === "licenseClass") typeHint = "Return ONLY 'A', 'B', or 'C'.";
-      else typeHint = "Return ONLY the clean value with no preamble, no explanation, no quotes.";
+      const currentData = flattenForState(dataRef.current);
+      const apiMsgs = msgs.length === 0
+        ? [{ role: "user", content: "Start the interview." }]
+        : msgs;
 
-      const sys = `You normalize a driver's spoken/typed answer into a clean form value. ${typeHint} If the user said 'skip' or 'none' or 'no answer', return an empty string. Never add commentary.`;
-      const reply = await askClaude(
-        [{ role: "user", content: `Question: "${question.q}"\nAnswer: "${rawAnswer}"\n\nNormalized value:` }],
-        sys
-      );
-      return reply.trim().replace(/^["']|["']$/g, "");
-    } catch (e) {
-      console.error('[INTERVIEW] normalize failed:', e);
-      return rawAnswer.trim();
-    }
-  };
+      const res = await fetch("/api/interview/turn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: apiMsgs, currentData }),
+      });
+      const result = await res.json();
 
-  const applyAnswer = (qid: string, value: any) => {
-    if (qid.startsWith("_res")) {
-      const m = qid.match(/^_res(\d+)_(\w+)$/);
-      if (m) {
-        const i = parseInt(m[1]); const key = m[2];
-        setData((prev: any) => {
-          const next = [...prev.residences];
-          while (next.length <= i) next.push(blankResidence());
-          next[i] = { ...next[i], [key]: value };
-          return { ...prev, residences: next };
-        });
-      }
-    } else if (qid.startsWith("_emp")) {
-      const m = qid.match(/^_emp(\d+)_(\w+)$/);
-      if (m) {
-        const i = parseInt(m[1]); const key = m[2];
-        setData((prev: any) => {
-          const next = [...prev.employers];
-          while (next.length <= i) next.push(blankEmployer());
-          next[i] = { ...next[i], [key]: value };
-          return { ...prev, employers: next };
-        });
-      }
-    } else if (qid.startsWith("_exp")) {
-      const m = qid.match(/^_exp(\d+)_(\w+)$/);
-      if (m) {
-        const i = parseInt(m[1]); const key = m[2];
-        setData((prev: any) => {
-          const next = [...prev.experience];
-          while (next.length <= i) next.push(blankExperience());
-          next[i] = { ...next[i], [key]: value };
-          return { ...prev, experience: next };
-        });
-      }
-    } else if (qid === "_edu_hs") {
-      setData((prev: any) => ({ ...prev, education: { ...prev.education, hs: value } }));
-    } else if (qid === "noAccidents" || qid === "noConvictions") {
-      setData((prev: any) => ({ ...prev, [qid]: value === "true" || value === true }));
-    } else {
-      setData((prev: any) => ({ ...prev, [qid]: value }));
-    }
-  };
-
-  const submit = async () => {
-    if (!answer.trim() || !current) return;
-    speech.stop();
-    const userText = answer;
-    setAnswer("");
-    setHistory(prev => [...prev, { role: "user", text: userText }]);
-    setProcessing(true);
-
-    try {
-      const normalized = await normalizeAnswer(userText, current);
-      applyAnswer(current.id, normalized);
-
-      let confirmMsg = "";
-      if (current.type === "yesno_inverse") {
-        confirmMsg = `Got it: ${normalized === "true" ? "no incidents" : "incidents recorded"}.`;
-      } else if (normalized === "" && current.optional) {
-        confirmMsg = "Skipped.";
-      } else if (normalized === "") {
-        confirmMsg = "I didn't catch that — let's try once more.";
-        setHistory(prev => [...prev, { role: "assistant", text: confirmMsg }]);
-        setTimeout(() => addQuestion(idx), 400);
-        setProcessing(false);
+      if (!res.ok) {
+        setError(result.error || `Request failed (${res.status})`);
+        setPhase("error");
         return;
-      } else {
-        confirmMsg = `✓ Saved: **${normalized}**`;
       }
-      setHistory(prev => [...prev, { role: "assistant", text: confirmMsg }]);
 
-      const nextIdx = idx + 1;
-      if (nextIdx >= activeQuestions.length) {
-        setHistory(prev => [...prev, { role: "assistant", text: "🎉 Excellent! All questions answered. Let's review and submit your application." }]);
-        setTimeout(() => onComplete(), 1500);
-      } else {
-        setTimeout(() => {
-          setIdx(nextIdx);
-          addQuestion(nextIdx);
-          if (autoMode) setTimeout(() => speech.start(), 600);
-        }, 700);
+      // Apply any extracted fields
+      if (result.extracted) {
+        applyExtractedFields(result.extracted);
+        setCollectedCount(c => c + Object.keys(result.extracted).length);
       }
+
+      const assistantMsg = { role: "assistant" as const, content: result.say };
+      const newHistory = msgs.length === 0
+        ? [{ role: "user" as const, content: "Start the interview." }, assistantMsg]
+        : [...msgs, assistantMsg];
+
+      setHistory(newHistory);
+      setAiMessage(result.say);
+
+      if (result.done) {
+        setPhase("speaking");
+        tts.speak(result.say, () => {
+          setPhase("ended");
+          setTimeout(() => onComplete(), 1500);
+        });
+        return;
+      }
+
+      // Speak then listen
+      setPhase("speaking");
+      tts.speak(result.say, () => {
+        startListening();
+      });
     } catch (e: any) {
-      setHistory(prev => [...prev, { role: "assistant", text: "Error: " + e.message }]);
+      setError(e.message || "Network error");
+      setPhase("error");
     }
-    setProcessing(false);
-  };
+  }, [applyExtractedFields, flattenForState, onComplete, tts]);
 
-  const skip = () => {
-    if (!current) return;
-    speech.stop();
-    setAnswer("");
-    setHistory(prev => [...prev, { role: "user", text: "(skipped)" }]);
-    const nextIdx = idx + 1;
-    if (nextIdx >= activeQuestions.length) onComplete();
-    else {
-      setTimeout(() => {
-        setIdx(nextIdx);
-        addQuestion(nextIdx);
-        if (autoMode) setTimeout(() => speech.start(), 600);
-      }, 400);
+  // Start the conversation when opened
+  useEffect(() => {
+    if (open && history.length === 0 && phase === "connecting") {
+      sendTurn([]);
     }
-  };
+  }, [open, history.length, phase, sendTurn]);
 
-  const goBack = () => {
-    if (idx === 0) return;
-    speech.stop();
-    setIdx(i => i - 1);
-    setHistory(prev => prev.slice(0, -2));
-    setTimeout(() => addQuestion(idx - 1), 200);
-  };
+  // Set up speech recognition once
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    const r = new SR();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = "en-US";
+    r.onresult = (e: any) => {
+      let interim = "";
+      let final = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t + " ";
+        else interim += t;
+      }
+      finalTranscriptRef.current += final;
+      interimRef.current = interim;
+      setTranscript((finalTranscriptRef.current + interim).trim());
+      // Reset silence timer on activity
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        autoSubmit();
+      }, 2000);
+    };
+    r.onerror = (e: any) => {
+      if (e.error === "no-speech" || e.error === "aborted") {
+        // Restart automatically if still in listening mode
+      }
+    };
+    r.onend = () => {
+      // Recognition stopped â€” handled by submit logic
+    };
+    recognitionRef.current = r;
+    return () => {
+      try { r.stop(); } catch (_) { /* noop */ }
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    };
+  }, []);
+
+  const startListening = useCallback(() => {
+    if (!recognitionRef.current) {
+      setError("Speech recognition not supported in this browser. Please use Chrome.");
+      setPhase("error");
+      return;
+    }
+    setPhase("listening");
+    setTranscript("");
+    finalTranscriptRef.current = "";
+    interimRef.current = "";
+    submitLockRef.current = false;
+    try { recognitionRef.current.start(); } catch (_) { /* already started */ }
+  }, []);
+
+  const autoSubmit = useCallback(() => {
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    try { recognitionRef.current?.stop(); } catch (_) { /* noop */ }
+    const text = (finalTranscriptRef.current + interimRef.current).trim();
+    if (!text) {
+      // Nothing captured â€” restart listening
+      submitLockRef.current = false;
+      setTimeout(() => startListening(), 400);
+      return;
+    }
+    setTranscript("");
+    setHistory(prev => {
+      const next = [...prev, { role: "user" as const, content: text }];
+      sendTurn(next);
+      return next;
+    });
+  }, [sendTurn, startListening]);
+
+  const skipQuestion = useCallback(() => {
+    if (phase !== "listening" && phase !== "speaking") return;
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    try { recognitionRef.current?.stop(); } catch (_) { /* noop */ }
+    tts.stop();
+    submitLockRef.current = true;
+    setTranscript("");
+    setHistory(prev => {
+      const next = [...prev, { role: "user" as const, content: "Skip this one for now." }];
+      sendTurn(next);
+      return next;
+    });
+  }, [phase, sendTurn, tts]);
+
+  const repeatQuestion = useCallback(() => {
+    if (!aiMessage) return;
+    tts.speak(aiMessage);
+  }, [aiMessage, tts]);
+
+  const endCall = useCallback(() => {
+    try { recognitionRef.current?.stop(); } catch (_) { /* noop */ }
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    tts.stop();
+    onClose();
+  }, [onClose, tts]);
+
+  const retryFromError = useCallback(() => {
+    setError(null);
+    if (history.length === 0) {
+      sendTurn([]);
+    } else {
+      sendTurn(history);
+    }
+  }, [history, sendTurn]);
 
   if (!open) return null;
 
+  const phaseLabel: Record<Phase, string> = {
+    connecting: "Connecting to Graviton...",
+    speaking: "Graviton is speaking",
+    listening: "Listening...",
+    processing: "Graviton is thinking...",
+    error: "Connection issue",
+    ended: "Interview complete",
+  };
+
+  const progress = Math.min(100, Math.round((collectedCount / TOTAL_FIELDS) * 100));
+
   return (
-    <div className="fixed inset-0 z-50 flex flex-col" style={{ background: BRAND.ink }}>
-      <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: BRAND.gold + "20", background: BRAND.navy }}>
+    <div className="fixed inset-0 z-50 flex flex-col" style={{
+      background: `radial-gradient(ellipse at top, ${BRAND.navyLight} 0%, ${BRAND.navy} 50%, ${BRAND.ink} 100%)`,
+    }}>
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: BRAND.gold + "20" }}>
         <div className="flex items-center gap-3">
           <div className="p-2 rounded" style={{ background: BRAND.maroon }}>
             <MessageCircle size={16} style={{ color: BRAND.gold }} />
           </div>
           <div>
-            <div className="text-xs uppercase tracking-[0.25em]" style={{ color: BRAND.gold }}>STS Interview Mode</div>
-            <div className="text-xs" style={{ color: "#8896A8" }}>{current ? `${current.section} · ${idx + 1} of ${activeQuestions.length}` : "Complete"}</div>
+            <div className="text-xs uppercase tracking-[0.25em]" style={{ color: BRAND.gold }}>Voice Interview</div>
+            <div className="text-xs" style={{ color: "#8896A8" }}>Graviton Â· AI Recruiting Assistant</div>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setAutoMode(!autoMode)}
+          {tts.supported && (
+            <button onClick={tts.toggle}
+              title={tts.enabled ? "Mute Graviton" : "Unmute Graviton"}
+              className="px-2 py-1.5 rounded text-[10px] uppercase tracking-widest font-bold"
+              style={{
+                background: tts.enabled ? BRAND.gold : "transparent",
+                color: tts.enabled ? BRAND.navy : BRAND.gold,
+                border: `1px solid ${BRAND.gold}50`
+              }}>
+              {tts.enabled ? "Voice On" : "Muted"}
+            </button>
+          )}
+          <button onClick={() => setShowLog(s => !s)}
+            title="Show transcript"
             className="px-2 py-1.5 rounded text-[10px] uppercase tracking-widest font-bold"
             style={{
-              background: autoMode ? BRAND.gold : "transparent",
-              color: autoMode ? BRAND.navy : BRAND.gold,
+              background: showLog ? BRAND.gold : "transparent",
+              color: showLog ? BRAND.navy : BRAND.gold,
               border: `1px solid ${BRAND.gold}50`
             }}>
-            {autoMode ? "🎙 Auto" : "Manual"}
+            Log
           </button>
-          <button onClick={onClose} className="p-2 rounded" style={{ color: BRAND.cream }}>
+          <button onClick={endCall} className="p-2 rounded" style={{ color: BRAND.cream }}>
             <X size={18} />
           </button>
         </div>
       </div>
 
+      {/* Progress */}
       <div className="h-1" style={{ background: "rgba(0,0,0,0.4)" }}>
-        <div className="h-full transition-all" style={{ width: `${progress}%`, background: `linear-gradient(90deg, ${BRAND.maroon}, ${BRAND.gold})` }} />
+        <div className="h-full transition-all duration-700" style={{
+          width: `${progress}%`,
+          background: `linear-gradient(90deg, ${BRAND.maroon}, ${BRAND.gold})`
+        }} />
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-8 py-6">
-        <div className="max-w-2xl mx-auto space-y-4">
-          {history.map((m, i) => (
-            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className="max-w-[85%]">
-                {m.section && (
-                  <div className="text-[10px] uppercase tracking-[0.25em] mb-1.5 ml-1" style={{ color: BRAND.gold }}>
-                    {m.section}
-                  </div>
-                )}
-                <div className="px-4 py-3 rounded-lg text-sm leading-relaxed"
-                  style={{
-                    background: m.role === "user" ? BRAND.maroon : BRAND.navyLight,
-                    color: BRAND.cream,
-                    whiteSpace: "pre-wrap",
-                    lineHeight: 1.6
-                  }}>
-                  {m.text}
-                </div>
+      {/* Main interview UI */}
+      <div className="flex-1 flex flex-col items-center justify-center px-4 py-6 relative">
+        {/* Animated avatar */}
+        <div className="relative mb-6 flex items-center justify-center" style={{ width: 240, height: 240 }}>
+          {/* Voice rings */}
+          <svg width="240" height="240" viewBox="0 0 240 240" style={{ position: "absolute", inset: 0 }}>
+            {[1, 2, 3].map(i => (
+              <circle
+                key={i}
+                cx="120" cy="120" r="80"
+                fill="none"
+                stroke={phase === "speaking" ? BRAND.gold : phase === "listening" ? BRAND.maroonLight : BRAND.gold + "30"}
+                strokeWidth="2"
+                opacity={phase === "speaking" || phase === "listening" ? 0.6 : 0.15}
+                style={{
+                  transformOrigin: "120px 120px",
+                  animation: (phase === "speaking" || phase === "listening")
+                    ? `voiceRing 2s ease-out infinite ${i * 0.5}s`
+                    : "none",
+                }}
+              />
+            ))}
+          </svg>
+          <style>{`
+            @keyframes voiceRing {
+              0% { transform: scale(0.8); opacity: 0.6; }
+              100% { transform: scale(1.5); opacity: 0; }
+            }
+            @keyframes pulse {
+              0%, 100% { transform: scale(1); opacity: 1; }
+              50% { transform: scale(1.05); opacity: 0.85; }
+            }
+            @keyframes thinking {
+              0%, 100% { opacity: 0.4; }
+              50% { opacity: 1; }
+            }
+          `}</style>
+
+          {/* Avatar circle */}
+          <div className="relative rounded-full flex items-center justify-center" style={{
+            width: 160,
+            height: 160,
+            background: `linear-gradient(135deg, ${BRAND.maroon}, ${BRAND.maroonLight})`,
+            border: `3px solid ${BRAND.gold}`,
+            boxShadow: phase === "speaking" ? `0 0 60px ${BRAND.gold}80` : phase === "listening" ? `0 0 40px ${BRAND.maroonLight}60` : "none",
+            animation: phase === "speaking" ? "pulse 1.5s ease-in-out infinite" : "none",
+            transition: "box-shadow 0.4s ease",
+          }}>
+            <div style={{
+              fontSize: 72,
+              color: BRAND.gold,
+              fontFamily: "Oswald, sans-serif",
+              fontWeight: 600,
+              letterSpacing: "0.05em",
+            }}>G</div>
+          </div>
+        </div>
+
+        {/* Phase indicator */}
+        <div className="text-xs uppercase tracking-[0.3em] mb-3" style={{
+          color: phase === "listening" ? BRAND.maroonLight : BRAND.gold,
+          animation: phase === "processing" ? "thinking 1.2s ease-in-out infinite" : "none",
+        }}>
+          {phaseLabel[phase]}
+        </div>
+
+        {/* Current message / transcript */}
+        <div className="max-w-xl w-full text-center min-h-[120px] flex items-start justify-center">
+          {phase === "error" ? (
+            <div className="p-5 rounded-lg w-full" style={{ background: BRAND.maroon + "30", border: `1px solid ${BRAND.maroonLight}` }}>
+              <div className="flex items-start gap-2 mb-3">
+                <AlertCircle size={16} style={{ color: BRAND.maroonLight, flexShrink: 0, marginTop: 2 }} />
+                <div className="text-sm text-left" style={{ color: BRAND.cream }}>{error}</div>
+              </div>
+              <div className="flex gap-2 justify-center mt-3">
+                <button onClick={retryFromError}
+                  className="px-4 py-2 rounded text-xs uppercase tracking-widest font-bold"
+                  style={{ background: BRAND.gold, color: BRAND.navy }}>
+                  Retry
+                </button>
+                <button onClick={onClose}
+                  className="px-4 py-2 rounded text-xs uppercase tracking-widest font-bold"
+                  style={{ background: "transparent", color: BRAND.gold, border: `1px solid ${BRAND.gold}50` }}>
+                  Switch to Form
+                </button>
               </div>
             </div>
-          ))}
-          {processing && (
-            <div className="flex items-center gap-2 text-sm pl-2" style={{ color: BRAND.gold }}>
-              <Loader2 size={14} className="animate-spin" /> Processing answer...
+          ) : phase === "listening" || (phase === "processing" && transcript) ? (
+            <div className="w-full">
+              <div className="text-sm leading-relaxed mb-3" style={{ color: "#8896A8", whiteSpace: "pre-wrap" }}>
+                {aiMessage}
+              </div>
+              <div className="px-4 py-3 rounded-lg text-base leading-relaxed text-left" style={{
+                background: BRAND.maroon + "30",
+                border: `1px solid ${BRAND.maroon}80`,
+                color: BRAND.cream,
+                minHeight: "60px",
+              }}>
+                {transcript || (
+                  <span style={{ color: "#5A6878", fontStyle: "italic" }}>
+                    Speak your answer â€” I'll wait until you're done...
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="px-5 py-4 rounded-lg text-base leading-relaxed" style={{
+              background: BRAND.navyLight,
+              border: `1px solid ${BRAND.gold}30`,
+              color: BRAND.cream,
+              whiteSpace: "pre-wrap",
+            }}>
+              {aiMessage || (phase === "connecting" ? "..." : "")}
             </div>
           )}
         </div>
       </div>
 
+      {/* Action bar */}
       <div className="border-t px-4 sm:px-8 py-4" style={{ borderColor: BRAND.gold + "20", background: BRAND.navy }}>
-        <div className="max-w-2xl mx-auto">
-          <div className="mb-3 min-h-[60px] p-3 rounded-md text-sm"
-            style={{
-              background: "rgba(0,0,0,0.4)",
-              border: `1px solid ${speech.listening ? BRAND.gold : BRAND.gold + "30"}`,
-              color: BRAND.cream,
-              boxShadow: speech.listening ? `0 0 0 2px ${BRAND.gold}40` : "none"
-            }}>
-            {answer ? answer : (
-              <span style={{ color: "#5A6878", fontStyle: "italic" }}>
-                {speech.listening ? "🎙 Listening — speak your answer..." : "Tap mic or type your answer..."}
-              </span>
-            )}
-          </div>
-
-          <textarea
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            placeholder="Type or edit your answer here..."
-            rows={2}
-            className="w-full px-3 py-2 text-sm rounded border outline-none mb-3"
-            style={{
-              background: "rgba(255,255,255,0.04)",
-              borderColor: BRAND.gold + "30",
-              color: BRAND.cream
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
-            }}
-          />
-
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={speech.listening ? speech.stop : speech.start}
-              disabled={!speech.supported || processing}
-              className="flex items-center gap-2 px-4 py-2.5 rounded text-xs uppercase tracking-widest font-bold flex-1 sm:flex-initial justify-center"
-              style={{
-                background: speech.listening ? BRAND.maroon : BRAND.gold,
-                color: speech.listening ? BRAND.cream : BRAND.navy,
-                minWidth: "120px"
-              }}>
-              {speech.listening ? <><MicOff size={14} /> Stop</> : <><Mic size={14} /> {speech.supported ? "Speak" : "Mic n/a"}</>}
-            </button>
-            <button
-              onClick={submit}
-              disabled={!answer.trim() || processing}
-              className="flex items-center gap-2 px-4 py-2.5 rounded text-xs uppercase tracking-widest font-bold disabled:opacity-30 flex-1 sm:flex-initial justify-center"
-              style={{ background: BRAND.maroon, color: BRAND.cream, minWidth: "120px" }}>
-              Submit Answer <ChevronRight size={14} />
-            </button>
-            {current?.optional && (
-              <button onClick={skip}
-                className="px-3 py-2.5 rounded text-xs uppercase tracking-widest font-bold"
-                style={{ color: BRAND.gold, border: `1px solid ${BRAND.gold}40` }}>
-                Skip
-              </button>
-            )}
-            <button onClick={goBack} disabled={idx === 0}
-              className="px-3 py-2.5 rounded text-xs uppercase tracking-widest font-bold disabled:opacity-30"
-              style={{ color: "#8896A8", border: `1px solid #8896A840` }}>
-              <ChevronLeft size={14} />
-            </button>
-          </div>
-
-          <div className="mt-2 text-[10px] uppercase tracking-widest" style={{ color: "#5A6878" }}>
-            Press Enter to submit · Shift+Enter for newline · Auto mode listens between questions
-          </div>
+        <div className="max-w-xl mx-auto flex items-center justify-center gap-2 flex-wrap">
+          <button
+            onClick={autoSubmit}
+            disabled={phase !== "listening" || !transcript.trim()}
+            className="flex items-center gap-2 px-4 py-2.5 rounded text-xs uppercase tracking-widest font-bold disabled:opacity-30"
+            style={{ background: BRAND.gold, color: BRAND.navy, minWidth: 140 }}>
+            Done speaking
+          </button>
+          <button
+            onClick={repeatQuestion}
+            disabled={!aiMessage || phase === "speaking" || phase === "processing"}
+            className="px-3 py-2.5 rounded text-xs uppercase tracking-widest font-bold disabled:opacity-30"
+            style={{ color: BRAND.gold, border: `1px solid ${BRAND.gold}40`, background: "transparent" }}>
+            ðŸ”Š Repeat
+          </button>
+          <button
+            onClick={skipQuestion}
+            disabled={phase !== "listening" && phase !== "speaking"}
+            className="px-3 py-2.5 rounded text-xs uppercase tracking-widest font-bold disabled:opacity-30"
+            style={{ color: "#8896A8", border: `1px solid #8896A840`, background: "transparent" }}>
+            Skip
+          </button>
+          <button
+            onClick={endCall}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded text-xs uppercase tracking-widest font-bold"
+            style={{ background: BRAND.maroon, color: BRAND.cream }}>
+            End Call
+          </button>
+        </div>
+        <div className="mt-3 text-center text-[10px] uppercase tracking-widest" style={{ color: "#5A6878" }}>
+          {phase === "listening"
+            ? "Auto-submits after 2 seconds of silence"
+            : phase === "speaking"
+              ? "Graviton is speaking â€” listening will start automatically"
+              : `${collectedCount}/${TOTAL_FIELDS} fields collected`}
         </div>
       </div>
+
+      {/* Transcript log overlay */}
+      {showLog && (
+        <div className="absolute inset-0 z-10 flex flex-col" style={{ background: BRAND.ink + "f8" }}>
+          <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: BRAND.gold + "20" }}>
+            <div className="text-xs uppercase tracking-[0.25em]" style={{ color: BRAND.gold }}>Conversation Log</div>
+            <button onClick={() => setShowLog(false)} className="p-2" style={{ color: BRAND.cream }}>
+              <X size={18} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-5 space-y-3 max-w-2xl mx-auto w-full">
+            {history.filter(m => m.content !== "Start the interview.").map((m, i) => (
+              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div className="max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed" style={{
+                  background: m.role === "user" ? BRAND.maroon : BRAND.navyLight,
+                  color: BRAND.cream,
+                  whiteSpace: "pre-wrap",
+                }}>
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {history.length <= 1 && (
+              <div className="text-center text-sm py-8" style={{ color: "#5A6878" }}>
+                Conversation will appear here as you talk with Graviton.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
+
 function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepName }: any) {
   const [messages, setMessages] = useState<any[]>([
-    { role: "assistant", content: "Hi — I'm your onboarding assistant. Ask me anything about the application, or use the **Voice Apply** button to fill the form by talking. I can answer DOT/FMCSA questions, explain what each field means, or help you draft your employment history." }
+    { role: "assistant", content: "Hi â€” I'm your onboarding assistant. Ask me anything about the application, or use the **Voice Apply** button to fill the form by talking. I can answer DOT/FMCSA questions, explain what each field means, or help you draft your employment history." }
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -688,9 +1084,9 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
     setVoiceMode(false);
     const transcript = voiceTranscript;
     setVoiceTranscript("");
-    setMessages(prev => [...prev, { role: "user", content: `🎙️ Voice apply: "${transcript}"` }]);
+    setMessages(prev => [...prev, { role: "user", content: `ðŸŽ™ï¸ Voice apply: "${transcript}"` }]);
     try {
-      const system = `Extract structured data from a driver's spoken application. Output ONLY a JSON object — no preamble, no markdown fences.\n\nAvailable fields: firstName, middleName, lastName, dob (YYYY-MM-DD), ssn, email, phone, position, dateAvailable (YYYY-MM-DD), legalRight (Yes/No), licenseState (2-letter), licenseNumber, licenseClass (A/B/C), licenseEndorsements, licenseExpiration (YYYY-MM-DD), medCardExpiration (YYYY-MM-DD), education.hs, education.college, education.other.\n\nOnly include fields the driver clearly mentioned. Return valid JSON only.`;
+      const system = `Extract structured data from a driver's spoken application. Output ONLY a JSON object â€” no preamble, no markdown fences.\n\nAvailable fields: firstName, middleName, lastName, dob (YYYY-MM-DD), ssn, email, phone, position, dateAvailable (YYYY-MM-DD), legalRight (Yes/No), licenseState (2-letter), licenseNumber, licenseClass (A/B/C), licenseEndorsements, licenseExpiration (YYYY-MM-DD), medCardExpiration (YYYY-MM-DD), education.hs, education.college, education.other.\n\nOnly include fields the driver clearly mentioned. Return valid JSON only.`;
       const reply = await askClaude([{ role: "user", content: transcript }], system, "claude-sonnet-4-6");
       const cleaned = reply.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(cleaned);
@@ -703,9 +1099,9 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
         return next;
       });
       const filled = Object.keys(parsed).filter(k => parsed[k]).join(", ");
-      setMessages(prev => [...prev, { role: "assistant", content: `✓ Filled: **${filled}**. Review before continuing.` }]);
+      setMessages(prev => [...prev, { role: "assistant", content: `âœ“ Filled: **${filled}**. Review before continuing.` }]);
     } catch (e: any) {
-      setMessages(prev => [...prev, { role: "assistant", content: "Couldn't parse — try again with clearer field statements." }]);
+      setMessages(prev => [...prev, { role: "assistant", content: "Couldn't parse â€” try again with clearer field statements." }]);
     }
     setLoading(false);
   };
@@ -744,7 +1140,7 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
 
       {voiceMode && (
         <div className="px-4 py-3 border-t" style={{ borderColor: BRAND.gold + "30", background: BRAND.navy }}>
-          <div className="text-[10px] uppercase tracking-[0.25em] mb-2" style={{ color: BRAND.gold }}>🎙️ Voice Apply — Speak Freely</div>
+          <div className="text-[10px] uppercase tracking-[0.25em] mb-2" style={{ color: BRAND.gold }}>ðŸŽ™ï¸ Voice Apply â€” Speak Freely</div>
           <div className="min-h-[60px] p-3 rounded text-sm mb-2" style={{ background: "rgba(0,0,0,0.4)", color: BRAND.cream }}>
             {voiceTranscript || <span style={{ color: "#5A6878" }}>Start talking...</span>}
           </div>
@@ -816,16 +1212,16 @@ function StepWelcome({ next, startInterview }: any) {
     <div className="text-center py-8 sm:py-12">
       <div className="inline-block px-4 py-1.5 rounded-full mb-6 text-[10px] uppercase tracking-[0.3em]"
         style={{ background: BRAND.maroon + "30", color: BRAND.gold, border: `1px solid ${BRAND.gold}40` }}>
-        MC-728978 · DOT-2089206 · FMCSA Compliant
+        MC-728978 Â· DOT-2089206 Â· FMCSA Compliant
       </div>
       <h1 className="text-5xl sm:text-7xl mb-4" style={{ fontFamily: "Oswald, sans-serif", fontWeight: 600, letterSpacing: "0.02em", color: BRAND.cream, lineHeight: 0.95 }}>
         DRIVER ONBOARDING
       </h1>
       <div className="text-2xl mb-2" style={{ color: BRAND.gold, fontFamily: "Oswald, sans-serif", letterSpacing: "0.4em" }}>
-        GO BIG · GO SQUARE
+        GO BIG Â· GO SQUARE
       </div>
       <p className="max-w-xl mx-auto mt-6 mb-10 text-sm sm:text-base" style={{ color: "#A8B6C8", lineHeight: 1.7 }}>
-        Welcome to Square Transportation Solution Inc. Complete your full Driver Qualification File online. Use Interview Mode to have our AI walk you through every question — just speak your answers.
+        Welcome to Square Transportation Solution Inc. Complete your Driver Qualification File by speaking with Graviton, our AI assistant â€” or fill out the form yourself.
       </p>
 
       <div className="grid sm:grid-cols-2 gap-4 max-w-3xl mx-auto mb-8">
@@ -842,13 +1238,13 @@ function StepWelcome({ next, startInterview }: any) {
           </div>
           <MessageCircle size={28} style={{ color: BRAND.gold }} className="mb-3" />
           <div className="text-xl mb-1" style={{ color: BRAND.cream, fontFamily: "Oswald, sans-serif", letterSpacing: "0.05em" }}>
-            INTERVIEW MODE
+            VOICE INTERVIEW
           </div>
           <div className="text-xs mb-3" style={{ color: BRAND.cream + "cc" }}>
-            AI asks each question. You speak or type the answer. ~15 minutes.
+            Talk to Graviton, our AI assistant, like a real phone interview. It asks, you speak. ~10â€“15 min.
           </div>
           <div className="flex items-center gap-1.5 text-xs uppercase tracking-widest font-bold" style={{ color: BRAND.gold }}>
-            Start Interview <ChevronRight size={14} />
+            Start Voice Interview <ChevronRight size={14} />
           </div>
         </button>
 
@@ -865,7 +1261,7 @@ function StepWelcome({ next, startInterview }: any) {
             FILL FORM MANUALLY
           </div>
           <div className="text-xs mb-3" style={{ color: "#A8B6C8" }}>
-            9-step wizard. Type or speak each field. ~30–40 minutes.
+            9-step wizard. Type or speak each field. ~30â€“40 minutes.
           </div>
           <div className="flex items-center gap-1.5 text-xs uppercase tracking-widest font-bold" style={{ color: BRAND.gold }}>
             Begin Form <ChevronRight size={14} />
@@ -886,7 +1282,7 @@ function StepWelcome({ next, startInterview }: any) {
           </div>
         ))}
       </div>
-      <div className="mt-4 text-xs" style={{ color: "#5A6878" }}>Progress saved automatically · You can switch modes anytime</div>
+      <div className="mt-4 text-xs" style={{ color: "#5A6878" }}>Progress saved automatically Â· You can switch modes anytime</div>
     </div>
   );
 }
@@ -895,7 +1291,7 @@ function StepWelcome({ next, startInterview }: any) {
 
 function StepPersonal({ data, set }: any) {
   return (
-    <Section title="Personal Information" subtitle="49 CFR §391.21(b)(2)" icon={User}>
+    <Section title="Personal Information" subtitle="49 CFR Â§391.21(b)(2)" icon={User}>
       <div className="grid sm:grid-cols-3 gap-4 mb-5">
         <Field label="First Name" required><VoiceInput value={data.firstName} onChange={(v: string) => set("firstName", v)} /></Field>
         <Field label="Middle Name"><VoiceInput value={data.middleName} onChange={(v: string) => set("middleName", v)} /></Field>
@@ -912,7 +1308,7 @@ function StepPersonal({ data, set }: any) {
       <div className="grid sm:grid-cols-3 gap-4 mb-5">
         <Field label="Position" required>
           <Select value={data.position} onChange={(v: string) => set("position", v)}
-            options={["Company Driver — Per Mile", "Owner Operator", "Lease Purchase", "Flat Rate Driver", "Local Driver"]} />
+            options={["Company Driver â€” Per Mile", "Owner Operator", "Lease Purchase", "Flat Rate Driver", "Local Driver"]} />
         </Field>
         <Field label="Date Available" required><VoiceInput type="date" value={data.dateAvailable} onChange={(v: string) => set("dateAvailable", v)} /></Field>
         <Field label="Legal Right to Work" required><YesNo value={data.legalRight} onChange={(v: string) => set("legalRight", v)} /></Field>
@@ -923,7 +1319,7 @@ function StepPersonal({ data, set }: any) {
 
 function StepLicense({ data, set }: any) {
   return (
-    <Section title="License & Experience" subtitle="49 CFR §391.21(b)(7)" icon={FileText}>
+    <Section title="License & Experience" subtitle="49 CFR Â§391.21(b)(7)" icon={FileText}>
       <div className="grid sm:grid-cols-5 gap-3 mb-5">
         <Field label="State"><Select value={data.licenseState} onChange={(v: string) => set("licenseState", v)} options={STATES} /></Field>
         <Field label="License #" required><VoiceInput value={data.licenseNumber} onChange={(v: string) => set("licenseNumber", v)} /></Field>
@@ -940,7 +1336,7 @@ function StepLicense({ data, set }: any) {
 
 function StepRecord({ data, set }: any) {
   return (
-    <Section title="Record" subtitle="Past 3 years · §391.21(b)(8)–(9)" icon={AlertCircle}>
+    <Section title="Record" subtitle="Past 3 years Â· Â§391.21(b)(8)â€“(9)" icon={AlertCircle}>
       <div className="space-y-3 mb-5">
         {[
           ["everDeniedLicense", "Have you ever been denied a license, permit, or privilege to operate a motor vehicle?"],
@@ -960,7 +1356,7 @@ function StepRecord({ data, set }: any) {
 
 function StepEmployment({ data, set }: any) {
   return (
-    <Section title="Employment History" subtitle="10 years required · §391.21(b)(10–11)" icon={Briefcase}>
+    <Section title="Employment History" subtitle="10 years required Â· Â§391.21(b)(10â€“11)" icon={Briefcase}>
       {data.employers.map((emp: any, i: number) => (
         <div key={i} className="mb-5 p-4 rounded-lg" style={{ background: "rgba(0,0,0,0.25)", border: `1px solid ${BRAND.gold}20` }}>
           <div className="text-xs uppercase tracking-[0.25em] font-bold mb-3" style={{ color: BRAND.gold }}>{i === 0 ? "Current / Most Recent" : `Previous ${i}`}</div>
@@ -1006,29 +1402,73 @@ function StepDA({ data, set }: any) {
 
 function StepDocs({ data, set, files, setFiles }: any) {
   const updateFile = (key: string) => (f: any) => setFiles({ ...files, [key]: f });
+  const requiredKeys = ["cdlFront", "cdlBack", "medCard", "ssn"];
+  const uploadedRequired = requiredKeys.filter(k => files[k]).length;
+  const allRequiredDone = uploadedRequired === requiredKeys.length;
+
   return (
-    <Section title="Document Uploads" subtitle="DOT-required documents" icon={FilePlus}>
-      <div className="grid sm:grid-cols-2 gap-3 mb-5">
-        <UploadZone label="CDL — Front" hint="Photo of license, front" file={files.cdlFront} onFile={updateFile("cdlFront")} />
-        <UploadZone label="CDL — Back" hint="Photo of license, back" file={files.cdlBack} onFile={updateFile("cdlBack")} />
-        <UploadZone label="Medical Card" hint="DOT physical card" file={files.medCard} onFile={updateFile("medCard")} />
-        <UploadZone label="Social Security Card" hint="For I-9" file={files.ssn} onFile={updateFile("ssn")} />
-        <UploadZone label="Voided Check" hint="For ACH direct deposit" file={files.check} onFile={updateFile("check")} />
-        <UploadZone label="W-9" hint="Tax ID form" file={files.w9} onFile={updateFile("w9")} />
+    <Section title="Document Uploads" subtitle="Required documents for FMCSA Driver Qualification File" icon={FilePlus}>
+      <div className="mb-5 p-3 rounded-lg" style={{ background: BRAND.navyLight, border: `1px solid ${BRAND.gold}30` }}>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs uppercase tracking-[0.25em] font-bold" style={{ color: BRAND.gold }}>
+            Required Documents
+          </div>
+          <div className="text-xs font-bold" style={{ color: allRequiredDone ? BRAND.gold : BRAND.maroonLight }}>
+            {uploadedRequired} / {requiredKeys.length}
+          </div>
+        </div>
+        <div className="text-[11px]" style={{ color: "#8896A8", lineHeight: 1.5 }}>
+          ðŸ“· Tap "Take Photo" to use your phone camera. Lay each document flat on a dark surface, fill the frame, and avoid glare. Photos auto-compress before upload.
+        </div>
       </div>
+
+      <div className="grid sm:grid-cols-2 gap-3 mb-6">
+        <UploadZone label="CDL â€” Front" required hint="Front side of your Commercial Driver's License"
+          file={files.cdlFront} onFile={updateFile("cdlFront")} />
+        <UploadZone label="CDL â€” Back" required hint="Back side of your CDL (with restrictions/endorsements)"
+          file={files.cdlBack} onFile={updateFile("cdlBack")} />
+        <UploadZone label="Medical Card" required hint="DOT Medical Examiner's Certificate"
+          file={files.medCard} onFile={updateFile("medCard")} />
+        <UploadZone label="Social Security Card" required hint="For I-9 verification â€” replaces voice SSN entry"
+          file={files.ssn} onFile={updateFile("ssn")} />
+      </div>
+
+      <div className="mb-3 mt-6 text-xs uppercase tracking-[0.25em] font-bold" style={{ color: "#8896A8" }}>
+        Optional Documents
+      </div>
+      <div className="grid sm:grid-cols-2 gap-3 mb-3">
+        <UploadZone label="Voided Check" hint="For ACH direct deposit setup"
+          file={files.check} onFile={updateFile("check")} />
+        <UploadZone label="W-9" hint="Tax ID form (owner-operators)"
+          file={files.w9} onFile={updateFile("w9")} />
+        <UploadZone label="Prior Employment Verification" hint="Signed verification from previous employer"
+          file={files.priorEmp} onFile={updateFile("priorEmp")} />
+        <UploadZone label="MVR / Driving Record" hint="Recent Motor Vehicle Record (we can pull this for you)"
+          file={files.mvr} onFile={updateFile("mvr")} />
+      </div>
+
+      {!allRequiredDone && (
+        <div className="mt-5 p-3 rounded-lg flex items-start gap-2"
+          style={{ background: BRAND.maroon + "20", border: `1px solid ${BRAND.maroon}` }}>
+          <AlertCircle size={16} style={{ color: BRAND.maroonLight, flexShrink: 0, marginTop: 2 }} />
+          <div className="text-xs" style={{ color: BRAND.cream, lineHeight: 1.5 }}>
+            You can submit your application without all required documents, but you'll need to provide them before your first dispatch. We'll follow up.
+          </div>
+        </div>
+      )}
     </Section>
   );
 }
 
 function StepAuth({ data, set, signature, setSignature }: any) {
   const auths: any[] = [
-    ["authMVR", "MVR Release — I authorize Square Transportation to obtain my Motor Vehicle Records."],
-    ["authPSP", "PSP Release — I authorize FMCSA Pre-Employment Screening Program access."],
-    ["authClearinghouse", "Clearinghouse Consent — I consent to FMCSA Drug & Alcohol Clearinghouse queries."],
-    ["authDA", "Drug & Alcohol Testing — I agree to all required testing per Part 382."],
+    ["authMVR", "MVR Release â€” I authorize Square Transportation to obtain my Motor Vehicle Records."],
+    ["authPSP", "PSP Release â€” I authorize FMCSA Pre-Employment Screening Program access."],
+    ["authClearinghouse", "Clearinghouse Consent â€” I consent to FMCSA Drug & Alcohol Clearinghouse queries."],
+    ["authDA", "Drug & Alcohol Testing â€” I agree to all required testing per Part 382."],
     ["authFCRA", "Fair Credit Reporting Act Disclosure."],
     ["authHandbook", "Employee Handbook Acknowledgment."],
-    ["authDLCert", "I certify I do not possess more than one driver's license per §383.21."],
+    ["authDLCert", "I certify I do not possess more than one driver's license per Â§383.21."],
     ["authOtherWork", "I will inform Square Transportation of any additional employment."]
   ];
   return (
@@ -1105,7 +1545,7 @@ function StepDone({ data, downloadJson, submitResult }: any) {
 
       {submitResult?.sms?.sent && (
         <div className="mt-6 text-xs" style={{ color: "#7BC97B" }}>
-          ✓ Recruiting team notified
+          âœ“ Recruiting team notified
         </div>
       )}
     </div>
@@ -1191,7 +1631,7 @@ export default function App() {
       const compressedFiles = await compressAllFiles(files);
       const totalMB = calcTotalSizeMB(compressedFiles, signature);
       if (totalMB > 4) {
-        setSubmitError(`Total upload size is ${totalMB.toFixed(1)}MB — exceeds 4MB limit. Try smaller photos.`);
+        setSubmitError(`Total upload size is ${totalMB.toFixed(1)}MB â€” exceeds 4MB limit. Try smaller photos.`);
         setSubmitting(false);
         return;
       }
@@ -1257,7 +1697,7 @@ export default function App() {
                 SQUARE TRANSPORTATION
               </div>
               <div className="text-[10px] uppercase tracking-[0.3em]" style={{ color: BRAND.gold }}>
-                Driver Onboarding · MC-728978
+                Driver Onboarding Â· MC-728978
               </div>
             </div>
           </div>
@@ -1308,7 +1748,7 @@ export default function App() {
       {restored && (
         <div className="fixed top-20 right-4 z-40 px-4 py-2 rounded shadow-lg text-xs uppercase tracking-widest font-bold"
           style={{ background: BRAND.gold, color: BRAND.navy }}>
-          ✓ Progress restored
+          âœ“ Progress restored
         </div>
       )}
 
@@ -1362,13 +1802,13 @@ export default function App() {
       <footer className="relative z-10 mt-12 py-6 border-t" style={{ borderColor: BRAND.gold + "15" }}>
         <div className="max-w-6xl mx-auto px-4 sm:px-8 flex flex-wrap items-center justify-between gap-4 text-xs" style={{ color: "#5A6878" }}>
           <div className="flex items-center gap-4 flex-wrap">
-            <span style={{ color: BRAND.gold, fontFamily: "Oswald, sans-serif", letterSpacing: "0.2em" }}>GO BIG · GO SQUARE</span>
-            <span>·</span>
+            <span style={{ color: BRAND.gold, fontFamily: "Oswald, sans-serif", letterSpacing: "0.2em" }}>GO BIG Â· GO SQUARE</span>
+            <span>Â·</span>
             <span className="flex items-center gap-1.5"><Phone size={11} /> (773) 747-8436</span>
             <span className="flex items-center gap-1.5"><Mail size={11} /> dispatch@gosquare.net</span>
             <span className="flex items-center gap-1.5"><MapPin size={11} /> Naperville, IL</span>
           </div>
-          <div>FMCSA Compliant · 49 CFR Parts 382, 383, 391</div>
+          <div>FMCSA Compliant Â· 49 CFR Parts 382, 383, 391</div>
         </div>
       </footer>
 
