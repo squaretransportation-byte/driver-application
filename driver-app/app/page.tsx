@@ -50,7 +50,10 @@ const DEFAULT_FORM: any = {
   authDA: false, authFCRA: false, authHandbook: false,
   authDLCert: false, authOtherWork: false,
   otherEmployer: "", otherEmployerIntent: "",
-  hosTotal: "", hosLastRelieved: ""
+  hosTotal: "", hosLastRelieved: "",
+  // TCPA / A2P 10DLC explicit opt-in. Captured at the phone-number step.
+  // Required for compliance with carriers and FCC.
+  smsConsent: false, smsConsentTimestamp: ""
 };
 
 const STORAGE_KEY = "sts:onboarding:v1";
@@ -86,6 +89,7 @@ function useTextToSpeech() {
   const [voiceName, setVoiceName] = useState<string>("");
   const [debugLog, setDebugLog] = useState<string[]>([]);
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const allMaleVoicesRef = useRef<SpeechSynthesisVoice[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const dummyRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -1494,6 +1498,28 @@ function StepPersonal({ data, set }: any) {
         <Field label="Email" required><VoiceInput type="email" value={data.email} onChange={(v: string) => set("email", v)} /></Field>
         <Field label="Phone" required><VoiceInput type="tel" value={data.phone} onChange={(v: string) => set("phone", v)} /></Field>
       </div>
+      {/* TCPA opt-in checkbox — required for SMS communication.
+          NOT pre-checked (per FCC rules — must be active user action). */}
+      <div className="mb-5 p-4 rounded" style={{ background: "#1A2A3E", border: "1px solid #B8924A40" }}>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={!!data.smsConsent}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              set("smsConsent", checked);
+              set("smsConsentTimestamp", checked ? new Date().toISOString() : "");
+            }}
+            className="mt-0.5 w-4 h-4 flex-shrink-0 cursor-pointer accent-[#B8924A]"
+          />
+          <span className="text-sm leading-relaxed" style={{ color: "#C8D2E0" }}>
+            I agree to receive SMS messages from <strong style={{ color: "#F4E8D0" }}>Square Transportation Solution Inc</strong> about my driver application, document requests, interview scheduling, and onboarding. Message frequency may vary (up to ~5/week). Standard message and data rates may apply. Reply <strong>STOP</strong> to opt out or <strong>HELP</strong> for help.{" "}
+            <a href="/sms-terms" target="_blank" rel="noopener noreferrer" className="underline" style={{ color: "#B8924A" }}>
+              See SMS Terms &amp; Conditions
+            </a>.
+          </span>
+        </label>
+      </div>
       <div className="grid sm:grid-cols-3 gap-4 mb-5">
         <Field label="Position" required>
           <Select value={data.position} onChange={(v: string) => set("position", v)}
@@ -2044,7 +2070,13 @@ export default function App() {
             <span className="flex items-center gap-1.5"><Mail size={11} /> dispatch@gosquare.net</span>
             <span className="flex items-center gap-1.5"><MapPin size={11} /> Naperville, IL</span>
           </div>
-          <div>FMCSA Compliant · 49 CFR Parts 382, 383, 391</div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <a href="/sms-terms" className="underline hover:opacity-80" style={{ color: BRAND.gold }}>
+              SMS Terms
+            </a>
+            <span>·</span>
+            <span>FMCSA Compliant · 49 CFR Parts 382, 383, 391</span>
+          </div>
         </div>
       </footer>
 
