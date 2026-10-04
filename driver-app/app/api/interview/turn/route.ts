@@ -1,4 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  originAllowed,
+  forbidden,
+  resolveModel,
+  sanitiseMessages,
+  edgeRateLimit,
+  clientKey,
+  tooManyRequests,
+} from "@/lib/api-guard";
 
 export const runtime = "edge";
 export const maxDuration = 30;
@@ -121,20 +130,33 @@ function safeParseTurn(text: string): TurnResult {
   }
 }
 
+// Defence in depth. The client already strips these before sending (see
+// redactFormForLLM in app/page.tsx), but this route is reachable directly and the
+// values must never reach a third-party API from either path.
+const SENSITIVE_STATE_KEY = /(ssn|social.?security|routing|account.?number|licenseNumber|password|secret|token)/i;
+
 export async function POST(req: NextRequest) {
+  if (!originAllowed(req)) return forbidden();
+
+  if (!edgeRateLimit(`interview:${clientKey(req)}`, 60, 60_000)) {
+    return tooManyRequests(60);
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
+    console.error("[interview] ANTHROPIC_API_KEY not configured");
     return NextResponse.json(
-      { error: "ANTHROPIC_API_KEY not configured. Add it in Vercel settings to use the voice interviewer." },
+      { error: "The voice interviewer is unavailable. You can complete the form manually." },
       { status: 503 }
     );
   }
 
   try {
     const body = await req.json();
-    const { messages, currentData, model } = body;
+    const { currentData } = body;
+    const messages = sanitiseMessages(body?.messages);
 
-    if (!Array.isArray(messages)) {
+    if (!messages) {
       return NextResponse.json({ error: "messages must be an array" }, { status: 400 });
     }
 
@@ -143,6 +165,11 @@ export async function POST(req: NextRequest) {
     if (currentData && typeof currentData === "object") {
       for (const [k, v] of Object.entries(currentData)) {
         if (v == null || v === "" || (Array.isArray(v) && v.length === 0)) continue;
+        if (SENSITIVE_STATE_KEY.test(k)) {
+          // Presence only — enough for the model to skip the question.
+          stateLines.push(`  ${k}: [collected, value withheld]`);
+          continue;
+        }
         stateLines.push(`  ${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`);
       }
     }
@@ -162,7 +189,7 @@ export async function POST(req: NextRequest) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: model || "claude-haiku-4-5-20251001",
+        model: resolveModel(body?.model),
         max_tokens: 600,
         system: SYSTEM_PROMPT + dateBlock + stateBlock,
         messages,
@@ -170,10 +197,13 @@ export async function POST(req: NextRequest) {
     });
 
     if (!res.ok) {
+      // Logged, not returned — the upstream body can echo the request back to an
+      // anonymous caller and discloses account state.
       const txt = await res.text();
+      console.error(`[interview] Anthropic API ${res.status}: ${txt.slice(0, 300)}`);
       return NextResponse.json(
-        { error: `Anthropic API ${res.status}: ${txt.slice(0, 300)}` },
-        { status: res.status }
+        { error: "The interviewer is unavailable right now. You can switch to the manual form." },
+        { status: 502 }
       );
     }
 
@@ -192,6 +222,10 @@ export async function POST(req: NextRequest) {
       done: !!parsed.done,
     });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "Unknown error" }, { status: 500 });
+    console.error(`[interview] ${e?.message || "unknown error"}`);
+    return NextResponse.json(
+      { error: "The interviewer is unavailable right now. You can switch to the manual form." },
+      { status: 500 }
+    );
   }
 }

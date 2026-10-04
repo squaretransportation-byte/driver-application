@@ -53,32 +53,120 @@ const DEFAULT_FORM: any = {
   hosTotal: "", hosLastRelieved: "",
   // TCPA / A2P 10DLC explicit opt-in. Captured at the phone-number step.
   // Required for compliance with carriers and FCC.
-  smsConsent: false, smsConsentTimestamp: ""
+  smsConsent: false, smsConsentTimestamp: "", smsConsentVersion: "", smsConsentText: ""
+};
+
+/**
+ * Keys whose VALUES must never leave the browser for a third-party API, and must
+ * never be written to localStorage. Matched by name, case-insensitively, at any
+ * depth. A redacted key is replaced with a presence flag so callers can still tell
+ * whether the field is filled.
+ */
+const SENSITIVE_KEY_PATTERN =
+  /(ssn|social.?security|routing|account.?number|licenseNumber|password|secret|token)/i;
+
+function redactFormForLLM(input: any): any {
+  if (input === null || input === undefined) return input;
+  if (Array.isArray(input)) return input.map(redactFormForLLM);
+  if (typeof input !== "object") return input;
+
+  const out: Record<string, any> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      if (value) out[`${key}Collected`] = true;
+      continue;
+    }
+    out[key] = redactFormForLLM(value);
+  }
+  return out;
+}
+
+/**
+ * TCPA / A2P 10DLC consent language, versioned.
+ *
+ * The defensible record is not "the box was ticked" — it is the exact language the
+ * applicant was shown, the number it was given for, and a server-side timestamp.
+ * Bump `version` whenever a single character of `text` changes, so a consent record
+ * written in 2026 can still be matched to the wording that produced it.
+ *
+ * Current FCC position as of October 2026: the one-to-one consent rule was vacated by
+ * the Eleventh Circuit in Insurance Marketing Coalition v. FCC before its 27 Jan 2025
+ * effective date, and the prior text of 47 CFR 64.1200(f)(9) governs. Revocation rules
+ * effective 11 Apr 2025 apply, including the revoke-all provision in force since
+ * 11 Apr 2026. Statutory exposure is $500-$1,500 per message.
+ */
+const SMS_CONSENT = {
+  version: "2026-10-03",
+  text:
+    "I agree to receive SMS messages from Square Transportation Solution Inc about my " +
+    "driver application, document requests, interview scheduling, and onboarding. " +
+    "Message frequency may vary (up to ~5/week). Standard message and data rates may " +
+    "apply. Reply STOP to opt out or HELP for help. See SMS Terms & Conditions at " +
+    "https://apply.gosquare.net/sms-terms. Consent is not a condition of employment " +
+    "or of consideration for employment.",
 };
 
 const STORAGE_KEY = "sts:onboarding:v1";
-const MIN_SIGNATURE_LENGTH = 200; // Base64 data URL longer than this = real drawing
+// A signature is validated by INK, not by string length.
+//
+// The old test was `dataUrl.length > 200`. An empty 140px-tall canvas PNG base64url
+// encodes to 362-782 characters depending on the container width, so a single tap
+// that left no visible mark passed the gate — and produced a §391.21(b)(12) certified
+// application with a blank signature above the applicant's printed name and date.
+//
+// Thresholds: a deliberate signature traces well over 400px of path across several
+// strokes and leaves thousands of inked pixels. A stray tap leaves one dot.
+const MIN_SIGNATURE_PATH_PX = 400;
+const MIN_SIGNATURE_INK_PIXELS = 600;
+const MIN_SIGNATURE_STROKES = 1;
 const MAX_INTERVIEW_HISTORY = 20; // Sliding window sent to API per turn
+
+// Saved drafts expire. Drivers apply from truck stop computers, shared tablets and
+// borrowed phones; an indefinite draft hands the next person at that terminal the
+// previous applicant's DOB, licence number, criminal-history and drug-test answers.
+const PROGRESS_TTL_MS = 24 * 60 * 60 * 1000;
 
 function saveProgress(payload: any) {
   try {
     const safe = JSON.parse(JSON.stringify(payload));
-    // Never persist SSN to localStorage — PII compliance
-    if (safe.data) safe.data.ssn = "";
-    // Don't persist full file data URLs — exceeds localStorage quota
+    // Strip every sensitive value, not just the SSN. The previous version blanked
+    // `ssn` and left routingNumber, accountNumber and licenseNumber in cleartext.
+    if (safe.data) safe.data = redactFormForLLM(safe.data);
+    // Don't persist full file data URLs — exceeds localStorage quota.
+    // `uploaded: true` is NOT set here: restored stubs carry no dataUrl, so marking
+    // them uploaded made the UI show four green checks while /api/submit silently
+    // skipped every file for want of `file.dataUrl`.
     if (safe.files) {
       const meta: Record<string, any> = {};
       for (const [k, v] of Object.entries(safe.files as Record<string, any>)) {
-        if (v) meta[k] = { name: v.name, size: v.size, type: v.type, uploaded: true };
+        if (v) meta[k] = { name: v.name, size: v.size, type: v.type, needsReupload: true };
       }
       safe.files = meta;
     }
-    // Don't persist signature — large base64 canvas data
+    // Don't persist signature — large base64 canvas data, and a signature should be
+    // made deliberately at the moment of certification, not restored from a draft.
     delete safe.signature;
+    safe.__savedAt = Date.now();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
   } catch (e) { }
 }
-function loadProgress() { try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
+
+function loadProgress() {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    if (!v) return null;
+    const parsed = JSON.parse(v);
+    if (!parsed?.__savedAt || Date.now() - parsed.__savedAt > PROGRESS_TTL_MS) {
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+    return parsed;
+  } catch (e) { return null; }
+}
+
+function clearProgress() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) { }
+}
 
 // Text-to-speech: makes the AI read questions aloud like a real interview.
 // Uses browser SpeechSynthesis (free, no API call needed).
@@ -464,60 +552,161 @@ function Checkbox({ checked, onChange, label }: any) {
   );
 }
 
+/**
+ * Count non-transparent pixels on the canvas. This is the ground truth for whether
+ * the applicant actually drew something — it cannot be fooled by PNG container
+ * overhead the way a string-length check can.
+ */
+function countInkPixels(canvas: HTMLCanvasElement): number {
+  try {
+    const ctx = canvas.getContext("2d");
+    if (!ctx || canvas.width === 0 || canvas.height === 0) return 0;
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let ink = 0;
+    // Stride 4 bytes per pixel; alpha is the 4th. Sample every pixel — a 140px-tall
+    // canvas is small enough that this costs well under a frame.
+    for (let i = 3; i < data.length; i += 4) {
+      if (data[i] > 16) ink++;
+    }
+    return ink;
+  } catch {
+    // getImageData throws on a tainted canvas. Nothing here loads cross-origin
+    // images, but if it ever does, fall back to "no measurable ink" rather than
+    // silently passing the gate.
+    return 0;
+  }
+}
+
 function SignaturePad({ onChange, value }: any) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const drawing = useRef(false);
   const last = useRef({ x: 0, y: 0 });
+  const pathLength = useRef(0);
+  const strokeCount = useRef(0);
+  const [metrics, setMetrics] = useState({ pathLength: 0, inkPixels: 0, strokes: 0 });
+
+  const sizeCanvas = useCallback(() => {
+    const c = canvasRef.current;
+    const container = containerRef.current;
+    if (!c || !container) return;
+    const displayWidth = container.getBoundingClientRect().width;
+    if (displayWidth > 0 && c.width !== Math.round(displayWidth)) {
+      // Resizing a canvas clears it. Preserve what is already drawn.
+      const prev = c.width > 0 && c.height > 0 ? c.toDataURL() : null;
+      c.width = Math.round(displayWidth);
+      c.height = 140;
+      const ctx = c.getContext("2d")!;
+      ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.strokeStyle = BRAND.cream;
+      if (prev) {
+        const img = new Image();
+        img.onload = () => ctx.drawImage(img, 0, 0);
+        img.src = prev;
+      }
+    }
+  }, []);
 
   useEffect(() => {
     const c = canvasRef.current;
     const container = containerRef.current;
     if (!c || !container) return;
-    // Match canvas internal width to displayed width — fixes distortion on mobile
     const displayWidth = container.getBoundingClientRect().width;
-    if (displayWidth > 0) c.width = displayWidth;
+    if (displayWidth > 0) c.width = Math.round(displayWidth);
     c.height = 140;
     const ctx = c.getContext("2d")!;
-    ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.strokeStyle = BRAND.cream;
+    ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.strokeStyle = BRAND.cream;
     if (value) {
       const img = new Image();
       img.onload = () => ctx.drawImage(img, 0, 0);
       img.src = value;
     }
-  }, []);
+    // Rotating a phone used to silently wipe a signature the applicant had already
+    // drawn, while the parent still held the stale dataUrl.
+    window.addEventListener("resize", sizeCanvas);
+    window.addEventListener("orientationchange", sizeCanvas);
+    return () => {
+      window.removeEventListener("resize", sizeCanvas);
+      window.removeEventListener("orientationchange", sizeCanvas);
+    };
+  }, [sizeCanvas]);
 
   const pos = (e: any) => {
     const r = canvasRef.current!.getBoundingClientRect();
     const t = e.touches ? e.touches[0] : e;
     return { x: t.clientX - r.left, y: t.clientY - r.top };
   };
-  const start = (e: any) => { e.preventDefault(); drawing.current = true; last.current = pos(e); };
+
+  const start = (e: any) => {
+    e.preventDefault();
+    drawing.current = true;
+    strokeCount.current += 1;
+    last.current = pos(e);
+  };
+
   const move = (e: any) => {
     if (!drawing.current) return;
     e.preventDefault();
     const ctx = canvasRef.current!.getContext("2d")!;
     const p = pos(e);
-    ctx.beginPath(); ctx.moveTo(last.current.x, last.current.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    const dx = p.x - last.current.x;
+    const dy = p.y - last.current.y;
+    pathLength.current += Math.sqrt(dx * dx + dy * dy);
+    ctx.beginPath();
+    ctx.moveTo(last.current.x, last.current.y);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
     last.current = p;
   };
-  const end = () => { if (!drawing.current) return; drawing.current = false; onChange(canvasRef.current!.toDataURL()); };
+
+  const end = () => {
+    if (!drawing.current) return;
+    drawing.current = false;
+    const c = canvasRef.current!;
+    const m = {
+      pathLength: Math.round(pathLength.current),
+      inkPixels: countInkPixels(c),
+      strokes: strokeCount.current,
+    };
+    setMetrics(m);
+    onChange(c.toDataURL(), m);
+  };
+
   const clear = () => {
     const c = canvasRef.current!;
     c.getContext("2d")!.clearRect(0, 0, c.width, c.height);
-    onChange("");
+    pathLength.current = 0;
+    strokeCount.current = 0;
+    const m = { pathLength: 0, inkPixels: 0, strokes: 0 };
+    setMetrics(m);
+    onChange("", m);
   };
+
+  const tooFaint =
+    metrics.strokes > 0 &&
+    (metrics.pathLength < MIN_SIGNATURE_PATH_PX ||
+      metrics.inkPixels < MIN_SIGNATURE_INK_PIXELS);
 
   return (
     <div ref={containerRef}>
       <canvas ref={canvasRef} height={140}
+        role="img"
+        aria-label="Signature drawing area. Sign using your mouse, finger, or stylus."
         className="w-full rounded-md border-2 cursor-crosshair touch-none"
         style={{ background: "rgba(0,0,0,0.3)", borderColor: BRAND.gold + "60", height: 140 }}
         onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
-        onTouchStart={start} onTouchMove={move} onTouchEnd={end} />
-      <button type="button" onClick={clear}
-        className="mt-2 text-xs uppercase tracking-widest px-3 py-1 border rounded"
-        style={{ color: BRAND.gold, borderColor: BRAND.gold + "50" }}>Clear signature</button>
+        onTouchStart={start} onTouchMove={move} onTouchEnd={end} onTouchCancel={end} />
+      <div className="mt-2 flex items-center gap-3 flex-wrap">
+        <button type="button" onClick={clear}
+          className="text-xs uppercase tracking-widest px-3 py-1 border rounded"
+          style={{ color: BRAND.gold, borderColor: BRAND.gold + "50" }}>Clear signature</button>
+        {tooFaint && (
+          <span className="text-xs" style={{ color: "#E8A33D" }} role="status">
+            That mark is too small to accept — please sign your full name.
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -585,13 +774,17 @@ function UploadZone({ id, label, hint, file, onFile, required, accept }: any) {
             <div className="text-sm font-bold" style={{ color: BRAND.cream, fontFamily: "Oswald, sans-serif", letterSpacing: "0.05em" }}>
               {label}
             </div>
-            {required && !file && (
+            {required && !file?.dataUrl && (
               <span className="px-1.5 py-0.5 rounded text-[8px] uppercase tracking-widest font-bold"
                 style={{ background: BRAND.maroon, color: BRAND.cream }}>Required</span>
             )}
-            {file && (
+            {file?.dataUrl && (
               <span className="px-1.5 py-0.5 rounded text-[8px] uppercase tracking-widest font-bold"
                 style={{ background: BRAND.gold, color: BRAND.navy }}>Uploaded</span>
+            )}
+            {file && !file.dataUrl && (
+              <span className="px-1.5 py-0.5 rounded text-[8px] uppercase tracking-widest font-bold"
+                style={{ background: BRAND.maroon, color: BRAND.cream }}>Re-attach</span>
             )}
           </div>
           {!file && hint && (
@@ -740,13 +933,21 @@ function InterviewMode({ open, onClose, data, setData, onComplete }: any) {
   // Flatten current form data for the API to know what's already collected
   const flattenForState = useCallback((d: any): Record<string, any> => {
     const out: Record<string, any> = {};
-    const keys = ["firstName", "middleName", "lastName", "dob", "ssn", "phone", "email",
-      "position", "dateAvailable", "legalRight", "licenseState", "licenseNumber",
+    // "ssn" is deliberately absent. This object is POSTed to /api/interview/turn and
+    // forwarded to a third-party LLM API on every single turn of the interview. The
+    // model does not need the SSN to know the field is filled — see ssnCollected below.
+    // Same reasoning applies to licenseNumber, which is a government ID number.
+    const keys = ["firstName", "middleName", "lastName", "dob", "phone", "email",
+      "position", "dateAvailable", "legalRight", "licenseState",
       "licenseClass", "licenseEndorsements", "licenseExpiration", "medCardExpiration",
       "everDeniedLicense", "everSuspended", "everConvictedCMV", "everConvictedLaw",
       "complianceExplain", "daRefused", "daPositive", "daPreEmpPositive", "daExplain",
       "hosTotal", "hosLastRelieved", "otherEmployer", "otherEmployerIntent"];
     keys.forEach(k => { if (d[k]) out[k] = d[k]; });
+    // Presence flags, not values — lets the interviewer skip a question that is
+    // already answered without the sensitive value ever leaving the browser.
+    if (d.ssn) out["ssnCollected"] = true;
+    if (d.licenseNumber) out["licenseNumberCollected"] = true;
     if (d.experience?.[0]?.equipment) {
       out["experience.0.equipment"] = d.experience[0].equipment;
       if (d.experience[0].from) out["experience.0.from"] = d.experience[0].from;
@@ -1262,7 +1463,11 @@ function AIAssistant({ open, onClose, formData, setFormData, currentStep, stepNa
     setInput("");
     setLoading(true);
     try {
-      const system = `You are the AI assistant for Square Transportation Solution Inc (MC-728978), helping a driver complete their FMCSA-compliant application. The driver is on step "${stepName}". The current form state is: ${JSON.stringify(formData).slice(0, 2000)}.\n\nBe concise. Answer DOT/FMCSA questions plainly. Reference 49 CFR Parts 383, 391, 382 when relevant.`;
+      // Redact BEFORE serialising. The previous version relied on slice(0, 2000) to
+      // truncate the payload, but `ssn` is the fifth key in DEFAULT_FORM — it was
+      // always inside the first 2000 characters and went to the LLM on every message.
+      const safeFormState = redactFormForLLM(formData);
+      const system = `You are the AI assistant for Square Transportation Solution Inc (MC-728978), helping a driver complete their FMCSA-compliant application. The driver is on step "${stepName}". The current form state is: ${JSON.stringify(safeFormState).slice(0, 2000)}.\n\nBe concise. Answer DOT/FMCSA questions plainly. Reference 49 CFR Parts 383, 391, 382 when relevant.`;
       const reply = await askClaude(next.map(m => ({ role: m.role, content: m.content })), system);
       setMessages([...next, { role: "assistant", content: reply }]);
     } catch (e: any) {
@@ -1509,6 +1714,9 @@ function StepPersonal({ data, set }: any) {
               const checked = e.target.checked;
               set("smsConsent", checked);
               set("smsConsentTimestamp", checked ? new Date().toISOString() : "");
+              // Record WHAT was agreed to, not just that something was.
+              set("smsConsentVersion", checked ? SMS_CONSENT.version : "");
+              set("smsConsentText", checked ? SMS_CONSENT.text : "");
             }}
             className="mt-0.5 w-4 h-4 flex-shrink-0 cursor-pointer accent-[#B8924A]"
           />
@@ -1516,7 +1724,7 @@ function StepPersonal({ data, set }: any) {
             I agree to receive SMS messages from <strong style={{ color: "#F4E8D0" }}>Square Transportation Solution Inc</strong> about my driver application, document requests, interview scheduling, and onboarding. Message frequency may vary (up to ~5/week). Standard message and data rates may apply. Reply <strong>STOP</strong> to opt out or <strong>HELP</strong> for help.{" "}
             <a href="/sms-terms" target="_blank" rel="noopener noreferrer" className="underline" style={{ color: "#B8924A" }}>
               See SMS Terms &amp; Conditions
-            </a>.
+            </a>. Consent is not a condition of employment or of consideration for employment.
           </span>
         </label>
       </div>
@@ -1630,7 +1838,10 @@ function StepDA({ data, set }: any) {
 function StepDocs({ data, set, files, setFiles }: any) {
   const updateFile = (key: string) => (f: any) => setFiles({ ...files, [key]: f });
   const requiredKeys = ["cdlFront", "cdlBack", "medCard", "ssn"];
-  const uploadedRequired = requiredKeys.filter(k => files[k]).length;
+  // Must have an actual dataUrl, not a restored metadata stub. A stub is truthy but
+  // carries no file content, so /api/submit skips it — counting stubs as uploaded
+  // showed the applicant four green checks for documents that never arrived.
+  const uploadedRequired = requiredKeys.filter(k => files[k]?.dataUrl).length;
   const allRequiredDone = uploadedRequired === requiredKeys.length;
 
   return (
@@ -1709,6 +1920,10 @@ function StepAuth({ data, set, signature, setSignature }: any) {
       </div>
       <div className="text-xs uppercase tracking-[0.25em] font-bold mb-3" style={{ color: BRAND.gold }}>E-Signature</div>
       <SignaturePad value={signature} onChange={setSignature} />
+      <p className="text-[11px] mt-3" style={{ color: "#8896A8", lineHeight: 1.5 }}>
+        By signing, you certify under 49 CFR §391.21(b)(12) that the entries above are
+        true and complete to the best of your knowledge.
+      </p>
     </Section>
   );
 }
@@ -1796,7 +2011,12 @@ export default function App() {
   const [step, setStep] = useState(0);
   const [data, setData] = useState(DEFAULT_FORM);
   const [files, setFiles] = useState<any>({});
-  const [signature, setSignature] = useState("");
+  const [signature, setSignatureRaw] = useState("");
+  const [signatureMetrics, setSignatureMetrics] = useState({ pathLength: 0, inkPixels: 0, strokes: 0 });
+  const setSignature = useCallback((dataUrl: string, m?: any) => {
+    setSignatureRaw(dataUrl);
+    if (m) setSignatureMetrics(m);
+  }, []);
   const [aiOpen, setAiOpen] = useState(false);
   const [interviewOpen, setInterviewOpen] = useState(false);
   const [restored, setRestored] = useState(false);
@@ -1809,7 +2029,8 @@ export default function App() {
       if (saved.data) setData(saved.data);
       if (saved.step != null) setStep(saved.step);
       if (saved.files) setFiles(saved.files);
-      if (saved.signature) setSignature(saved.signature);
+      // Signature is never persisted (see saveProgress) — the certification has to be
+      // made deliberately at submission, not restored from a draft. Nothing to rehydrate.
       setRestored(true);
       setTimeout(() => setRestored(false), 4000);
     }
@@ -1823,7 +2044,11 @@ export default function App() {
 
   const allAuthsChecked = data.authMVR && data.authPSP && data.authClearinghouse &&
     data.authDA && data.authFCRA && data.authHandbook && data.authDLCert && data.authOtherWork;
-  const signatureValid = !!signature && signature.length > MIN_SIGNATURE_LENGTH;
+  const signatureValid =
+    !!signature &&
+    signatureMetrics.strokes >= MIN_SIGNATURE_STROKES &&
+    signatureMetrics.pathLength >= MIN_SIGNATURE_PATH_PX &&
+    signatureMetrics.inkPixels >= MIN_SIGNATURE_INK_PIXELS;
 
   const completionScore = (() => {
     let total = 0, filled = 0;
@@ -1865,13 +2090,22 @@ export default function App() {
     if (data.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
       errors.push("Email format is invalid");
     }
-    if (!signatureValid) errors.push("E-Signature is required");
+    if (!signatureValid) errors.push("A signature is required — please sign your full name");
     if (!allAuthsChecked) errors.push("All authorizations must be agreed to");
-    
+    // §391.21(b)(2) requires the SSN on the application itself. It is encrypted at
+    // rest and never printed on the DQF, but it cannot be omitted.
+    if (!data.ssn?.toString().trim()) errors.push("Social Security Number is required");
+
     return errors;
   };
 
   const submit = async () => {
+    // Advisory only — the authoritative check is computeDisqualified() in
+    // /api/submit, which the applicant cannot bypass. A self-reported Part 382 event
+    // does NOT block submission: refusing the application outright would deny a
+    // driver who has completed SAP return-to-duty any route to be considered, and
+    // the carrier still owes a documented, individualised decision. It routes the
+    // record to needs_review and flags the recruiter SMS instead.
     const isDisqualified = data.daRefused === "Yes" || data.daPositive === "Yes" || data.daPreEmpPositive === "Yes";
     const errors = validateForm();
     if (errors.length > 0) {

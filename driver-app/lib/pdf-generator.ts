@@ -1,4 +1,5 @@
 import { PDFDocument, PDFPage, StandardFonts, rgb, RGB } from "pdf-lib";
+import { redactSSN } from "@/lib/field-crypto";
 
 const COLORS = {
   maroon: rgb(0.42, 0.10, 0.10),
@@ -237,7 +238,10 @@ export async function generateDqfPdf(data: any, applicationId: string, signature
   ]);
   c = drawRow(c, [
     { label: "Date of Birth", value: fmt(data.dob) },
-    { label: "SSN", value: fmt(data.ssn) },
+    // Redacted. 49 CFR 391.21(b)(2) requires the SSN to be collected, not printed
+    // on a document that circulates as a signed-URL PDF. The full value lives
+    // encrypted in Firestore (_encrypted.ssn) for the MVR and Clearinghouse queries.
+    { label: "SSN", value: redactSSN(data.ssn) || "—" },
     { label: "Phone", value: fmt(data.phone) },
   ]);
   c = drawRow(c, [
@@ -411,8 +415,13 @@ export async function generateDqfPdf(data: any, applicationId: string, signature
       color: agreed ? COLORS.gold : rgb(1, 1, 1),
     });
     if (agreed) {
-      c.page.drawText("✓", {
-        x: MARGIN + 1, y: c.y, size: 9, font: bold, color: COLORS.navy,
+      // "X", not "✓". StandardFonts.Helvetica is WinAnsi-encoded and cannot encode
+      // U+2713 — drawText threw on every submission where an authorization was
+      // checked, the throw was swallowed by the catch in the submit route, and the
+      // application was saved with an empty pdfUrl. Any glyph outside WinAnsi needs
+      // an embedded font via fontkit.
+      c.page.drawText("X", {
+        x: MARGIN + 2, y: c.y, size: 8, font: bold, color: COLORS.navy,
       });
     }
     c.page.drawText(label as string, {

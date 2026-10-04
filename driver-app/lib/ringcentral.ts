@@ -96,6 +96,7 @@ export async function notifyNewApplication(data: {
   driverPhone: string;
   position: string;
   pdfUrl: string;
+  needsReview?: boolean;
 }): Promise<{ ok: boolean; results: any[] } | null> {
   const recipients = (process.env.RINGCENTRAL_DISPATCH_NUMBERS || "")
     .split(",")
@@ -107,15 +108,20 @@ export async function notifyNewApplication(data: {
     return null;
   }
 
+  // The DQF link is a 7-day signed URL to a PDF containing the applicant's full
+  // application. SMS is not a confidential channel and the link needs no credential,
+  // so it is deliberately NOT included here — recruiters open the application in the
+  // review tool instead.
   const message = [
-    `🚛 NEW DRIVER APPLICATION`,
+    data.needsReview ? `NEW DRIVER APPLICATION — NEEDS REVIEW` : `NEW DRIVER APPLICATION`,
     ``,
     `Name: ${data.driverName}`,
     `Phone: ${data.driverPhone}`,
     `Position: ${data.position}`,
     `App ID: ${data.applicationId}`,
-    ``,
-    `DQF: ${data.pdfUrl}`,
+    ...(data.needsReview
+      ? [``, `Self-reported a Part 382 drug/alcohol event. Do not dispatch before SAP documentation is verified.`]
+      : []),
   ].join("\n");
 
   return sendSMS(recipients, message);

@@ -2,6 +2,8 @@ node_modules
 .next
 out
 .env*
+!.env.example
 .vercel
+tsconfig.tsbuildinfo
 *.log
 .DS_Store
