@@ -311,10 +311,21 @@ export async function POST(req: NextRequest) {
     const syncOutcome = await pushToSquareSchedule(docData, applicationId);
     await recordSyncOutcome(applicationId, syncOutcome);
 
-    // ============== NOTIFY VIA SMS ==============
+    // ============== NOTIFY VIA SMS (fallback only) ==============
+    // SquareSchedule sends the recruiting alert when it ingests the application
+    // — that is where the RingCentral credentials live, and it only fires once
+    // the application is actually in the system of record.
+    //
+    // This portal texts ONLY when the push failed, because in that case
+    // SquareSchedule never saw the application and cannot alert anyone. Without
+    // this condition, configuring RingCentral here would double-text the team
+    // on every submission.
     stage = "sms";
     let smsResult: any = null;
     try {
+      if (syncOutcome.ok) {
+        smsResult = { skipped: "notified by squareschedule" };
+      } else {
       smsResult = await notifyNewApplication({
         applicationId,
         driverName,
@@ -324,8 +335,9 @@ export async function POST(req: NextRequest) {
         needsReview: isDisqualified,
         // Tell the recruiter when the application did NOT reach SquareSchedule,
         // so a silent sync failure does not become a lost applicant.
-        syncFailed: !syncOutcome.ok,
+        syncFailed: true,
       });
+      }
     } catch (e: any) {
       console.error("[submit] SMS notify failed (non-fatal):", e?.message || "unknown error");
     }
@@ -335,7 +347,9 @@ export async function POST(req: NextRequest) {
       applicationId,
       pdfUrl,
       synced: syncOutcome.ok,
-      sms: smsResult ? { sent: smsResult.ok, recipients: smsResult.results.length } : { skipped: true },
+      sms: smsResult?.results
+        ? { sent: smsResult.ok, recipients: smsResult.results.length }
+        : smsResult || { skipped: true },
     });
   } catch (e: any) {
     // Message only. The exception object on this path can carry the request body —
