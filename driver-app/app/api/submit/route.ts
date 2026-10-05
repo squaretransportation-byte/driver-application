@@ -6,6 +6,7 @@ import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import { encryptField, encryptionAvailable, redactSSN } from "@/lib/field-crypto";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { createHash } from "crypto";
+import { pushToSquareSchedule, recordSyncOutcome } from "@/lib/squareschedule";
 
 // Node runtime required for Firebase Admin SDK and pdf-lib
 export const runtime = "nodejs";
@@ -302,6 +303,14 @@ export async function POST(req: NextRequest) {
       { merge: true }
     );
 
+    // ============== SYNC TO SQUARESCHEDULE ==============
+    // Non-fatal by design: the applicant has already signed and certified, so a
+    // recruiting-system outage must not cost them the submission. A failed push
+    // is recorded on the document and retried by /api/resync.
+    stage = "sync";
+    const syncOutcome = await pushToSquareSchedule(docData, applicationId);
+    await recordSyncOutcome(applicationId, syncOutcome);
+
     // ============== NOTIFY VIA SMS ==============
     stage = "sms";
     let smsResult: any = null;
@@ -313,6 +322,9 @@ export async function POST(req: NextRequest) {
         position: data.position || "",
         pdfUrl,
         needsReview: isDisqualified,
+        // Tell the recruiter when the application did NOT reach SquareSchedule,
+        // so a silent sync failure does not become a lost applicant.
+        syncFailed: !syncOutcome.ok,
       });
     } catch (e: any) {
       console.error("[submit] SMS notify failed (non-fatal):", e?.message || "unknown error");
@@ -322,6 +334,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       applicationId,
       pdfUrl,
+      synced: syncOutcome.ok,
       sms: smsResult ? { sent: smsResult.ok, recipients: smsResult.results.length } : { skipped: true },
     });
   } catch (e: any) {

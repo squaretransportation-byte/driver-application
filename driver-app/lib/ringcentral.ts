@@ -97,6 +97,7 @@ export async function notifyNewApplication(data: {
   position: string;
   pdfUrl: string;
   needsReview?: boolean;
+  syncFailed?: boolean;
 }): Promise<{ ok: boolean; results: any[] } | null> {
   const recipients = (process.env.RINGCENTRAL_DISPATCH_NUMBERS || "")
     .split(",")
@@ -121,6 +122,9 @@ export async function notifyNewApplication(data: {
     `App ID: ${data.applicationId}`,
     ...(data.needsReview
       ? [``, `Self-reported a Part 382 drug/alcohol event. Do not dispatch before SAP documentation is verified.`]
+      : []),
+    ...(data.syncFailed
+      ? [``, `NOT in SquareSchedule — sync failed. Run /api/resync or open the portal record directly.`]
       : []),
   ].join("\n");
 
