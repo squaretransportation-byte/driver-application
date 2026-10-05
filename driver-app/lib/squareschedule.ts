@@ -26,10 +26,23 @@ export type SyncOutcome = {
   skipped?: boolean;
 };
 
+const INGEST_PATH = "/api/ingest-application";
+
+/**
+ * Resolve the ingest endpoint.
+ *
+ * SQUARESCHEDULE_INGEST_URL is the variable already configured on this project
+ * and is preferred. It may hold either the full endpoint or just the origin, so
+ * both are accepted — a trailing-slash or missing-path mismatch here would fail
+ * silently on every submission, which is the failure mode this whole change
+ * exists to remove.
+ */
 function endpoint(): string | null {
-  const base = (process.env.SQUARESCHEDULE_URL || "").trim().replace(/\/+$/, "");
-  if (!base) return null;
-  return `${base}/api/ingest-application`;
+  const raw = (process.env.SQUARESCHEDULE_INGEST_URL || process.env.SQUARESCHEDULE_URL || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!raw) return null;
+  return raw.endsWith(INGEST_PATH) ? raw : `${raw}${INGEST_PATH}`;
 }
 
 /**
@@ -58,7 +71,7 @@ export async function pushToSquareSchedule(
 
   if (!url || !secret) {
     console.warn(
-      "[sync] SQUARESCHEDULE_URL or INGEST_SECRET is not set — application stored locally only"
+      "[sync] SQUARESCHEDULE_INGEST_URL or INGEST_SECRET is not set — application stored locally only"
     );
     return { ok: false, skipped: true, error: "not configured" };
   }
@@ -114,7 +127,7 @@ export async function recordSyncOutcome(
             lastAttemptAt: Timestamp.now(),
             lastStatus: outcome.status ?? null,
             lastError: outcome.error ?? null,
-            target: process.env.SQUARESCHEDULE_URL || null,
+            target: endpoint(),
           },
         },
         { merge: true }

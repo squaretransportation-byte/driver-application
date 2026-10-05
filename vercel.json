@@ -1,7 +1,0 @@
-{
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "cd driver-app && npm run build",
-  "installCommand": "cd driver-app && npm install",
-  "outputDirectory": "driver-app/.next",
-  "framework": "nextjs"
-}
